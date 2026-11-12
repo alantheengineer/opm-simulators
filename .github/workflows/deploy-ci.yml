@@ -1,0 +1,98 @@
+name: deploy-ci
+
+on:
+  pull_request:
+    branches: [deploy]
+  push:
+    branches: [deploy]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+  CCACHE_MAXSIZE: 4G
+  # opm-common comes from this account's fork, opm-grid from upstream.
+  OPM_COMMON_REF: ${{ vars.OPM_COMMON_REF || 'deploy' }}
+  OPM_GRID_REF: ${{ vars.OPM_GRID_REF || 'master' }}
+  # Only these targets are built; all flow variants would exceed the runner time limit.
+  SIM_TARGETS: flow_brine
+  # Test targets to build and run; the ctest name is the target name without test_.
+  SIM_TESTS: ""
+
+jobs:
+  format:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang-format-18
+      - run: .github/scripts/check-format.sh "origin/${{ github.base_ref }}"
+
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: opm-simulators
+          fetch-depth: 0
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/opm-common
+          ref: ${{ env.OPM_COMMON_REF }}
+          path: opm-common
+      - uses: actions/checkout@v4
+        with:
+          repository: OPM/opm-grid
+          ref: ${{ env.OPM_GRID_REF }}
+          path: opm-grid
+      - name: Install packages
+        run: |
+          sudo apt-get update
+          xargs -a opm-simulators/.github/apt-packages.txt sudo apt-get install -y --no-install-recommends
+          sudo apt-get install -y --no-install-recommends clang-tidy-18
+      - uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-${{ runner.os }}-sim-${{ github.sha }}
+          restore-keys: ccache-${{ runner.os }}-sim-
+      - name: Build opm-common
+        run: |
+          cmake -S opm-common -B build/common -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DOPM_ENABLE_PYTHON=OFF -DBUILD_TESTING=OFF
+          cmake --build build/common --parallel 4
+      - name: Build opm-grid
+        run: |
+          cmake -S opm-grid -B build/grid -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DBUILD_TESTING=OFF \
+            -Dopm-common_DIR="$PWD/build/common"
+          cmake --build build/grid --parallel 4
+      - name: Configure opm-simulators
+        run: |
+          cmake -S opm-simulators -B build/sim -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DBUILD_FLOW_VARIANTS=OFF -DOPM_ENABLE_PYTHON=OFF -DUSE_OPENCL=OFF -DUSE_GPU_BRIDGE=OFF \
+            -Dopm-common_DIR="$PWD/build/common" -Dopm-grid_DIR="$PWD/build/grid"
+      - name: Strict warnings and clang-tidy on changed sources
+        if: github.event_name == 'pull_request'
+        working-directory: opm-simulators
+        run: |
+          .github/scripts/check-warnings.sh ../build/sim "origin/${{ github.base_ref }}"
+          .github/scripts/check-tidy.sh ../build/sim "origin/${{ github.base_ref }}"
+      - name: Build opm-simulators
+        run: |
+          read -ra targets <<< "$SIM_TARGETS $SIM_TESTS"
+          cmake --build build/sim --parallel 4 --target "${targets[@]}"
+      - name: Test
+        if: env.SIM_TESTS != ''
+        run: |
+          pattern=$(echo "$SIM_TESTS" | sed 's/test_//g; s/ /|/g')
+          ctest --test-dir build/sim --output-on-failure --timeout 1800 -R "^($pattern)\$"
