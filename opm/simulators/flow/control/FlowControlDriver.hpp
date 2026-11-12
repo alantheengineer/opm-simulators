@@ -183,6 +183,7 @@ public:
         const auto failure = report.failure;
         const std::size_t first = report.stepreports.size();
 
+        stepped_ = true;
         // False when the schedule asks the run to stop, for example EXIT.
         if (main_.executeStep() == 0) {
             stopped_ = true;
@@ -212,6 +213,11 @@ public:
 
     int finish()
     {
+        // The timing trailer of executeStepsCleanup() needs the solver, which
+        // flow creates in the first report step.
+        if (!stepped_) {
+            return main_.getStepDriverPtr()->finalize().success.exit_status;
+        }
         return main_.executeStepsCleanup();
     }
 
@@ -644,6 +650,7 @@ private:
 
     Main& main_;
     bool stopped_ = false;
+    bool stepped_ = false;
     StepReport lastStep_;
 
     std::array<int, 3> dims_ {};
