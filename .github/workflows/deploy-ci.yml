@@ -21,9 +21,10 @@ env:
   OPM_COMMON_REF: ${{ vars.OPM_COMMON_REF || 'deploy' }}
   OPM_GRID_REF: ${{ vars.OPM_GRID_REF || 'master' }}
   # Only these targets are built; all flow variants would exceed the runner time limit.
-  SIM_TARGETS: flow_brine
-  # Test targets to build and run; the ctest name is the target name without test_.
-  SIM_TESTS: ""
+  # Targets the build does not define are skipped.
+  SIM_TARGETS: flow_brine flow_blackoil control_step_client test_control_server
+  # ctest names to run.
+  SIM_TESTS: control_server control_matches_normal_run
 
 jobs:
   format:
@@ -86,14 +87,26 @@ jobs:
         if: github.event_name == 'pull_request'
         working-directory: opm-simulators
         run: |
+          # Generated gRPC headers are needed before the changed sources can be checked.
+          if ninja -C ../build/sim -t targets all | grep -q '^opmcontrol:'; then
+            cmake --build ../build/sim --target opmcontrol
+          fi
           .github/scripts/check-warnings.sh ../build/sim "origin/${{ github.base_ref }}"
           .github/scripts/check-tidy.sh ../build/sim "origin/${{ github.base_ref }}"
       - name: Build opm-simulators
         run: |
-          read -ra targets <<< "$SIM_TARGETS $SIM_TESTS"
+          mapfile -t known < <(ninja -C build/sim -t targets all | cut -d: -f1)
+          targets=()
+          for target in $SIM_TARGETS; do
+            if printf '%s\n' "${known[@]}" | grep -qx "$target"; then
+              targets+=("$target")
+            else
+              echo "Skipping $target, not defined by this build"
+            fi
+          done
           cmake --build build/sim --parallel 4 --target "${targets[@]}"
       - name: Test
         if: env.SIM_TESTS != ''
         run: |
-          pattern=$(echo "$SIM_TESTS" | sed 's/test_//g; s/ /|/g')
+          pattern=${SIM_TESTS// /|}
           ctest --test-dir build/sim --output-on-failure --timeout 1800 -R "^($pattern)\$"
