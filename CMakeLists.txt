@@ -27,6 +27,7 @@ option(USE_CHOW_PATEL_ILU_GPU "Run iterative ILU decomposition on GPU? Requires 
 option(USE_CHOW_PATEL_ILU_GPU_PARALLEL "Try to use more parallelism on the GPU during the iterative ILU decomposition? Requires USE_CHOW_PATEL_ILU_GPU" OFF)
 option(BUILD_FLOW_ALU_GRID "Build flow blackoil with alu grid" OFF)
 option(USE_DAMARIS_LIB "Use the Damaris library for asynchronous I/O?" OFF)
+option(OPM_ENABLE_CONTROL_SERVER "Build the gRPC server for step control of flow?" OFF)
 option(USE_GPU_BRIDGE "Enable the GPU bridge (GPU/AMGCL solvers)" ON)
 option(CONVERT_CUDA_TO_HIP "Convert CUDA code to HIP (to run on AMD cards)" OFF)
 option(SUPPRESS_HIPIFY_WARNINGS "Suppress warnings in hipify?" ON)
@@ -284,6 +285,10 @@ macro(opm-simulators_prereqs_hook)
     endif()
   endif()
 
+  if(OPM_ENABLE_CONTROL_SERVER)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/controlServer.cmake)
+  endif()
+
   include(CheckAVX2)
   check_for_avx2()
 endmacro()
@@ -459,6 +464,18 @@ macro(opm-simulators_config_hook)
 endmacro()
 
 macro(opm-simulators_tests_hook)
+  if(OPM_ENABLE_CONTROL_SERVER AND TARGET Boost::unit_test_framework)
+    opm_add_test(test_control_server
+      DEPENDS
+        opmsimulators
+      LIBRARIES
+        opmsimulators
+        Boost::unit_test_framework
+      SOURCES
+        tests/control/test_control_server.cpp
+    )
+  endif()
+
   include(${CMAKE_CURRENT_SOURCE_DIR}/modelTests.cmake)
 
   # Look for the opm-tests repository; if found the variable
@@ -1100,6 +1117,17 @@ macro(opm-simulators_targets_hook)
         )
       endif()
     endforeach()
+  endif()
+
+  if(OPM_ENABLE_CONTROL_SERVER AND TARGET flow_blackoil)
+    add_test(NAME control_matches_normal_run
+      COMMAND
+        ${PROJECT_SOURCE_DIR}/tests/control/run-control-test.sh
+        $<TARGET_FILE:flow_blackoil>
+        $<TARGET_FILE:control_step_client>
+        ${PROJECT_SOURCE_DIR}/python/test_data/SPE1CASE1a/SPE1CASE1.DATA
+        ${PROJECT_BINARY_DIR}/tests/control
+    )
   endif()
 endmacro()
 
