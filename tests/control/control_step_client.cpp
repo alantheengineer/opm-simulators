@@ -30,6 +30,7 @@
 #include <iterator>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -100,6 +101,47 @@ private:
     std::unique_ptr<pb::Control::Stub> stub_;
     std::string token_;
 };
+
+std::string
+readFile(const std::string& path)
+{
+    std::ifstream in(path);
+    return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+}
+
+bool
+applySchedule(Client& client, const std::string& text)
+{
+    pb::ApplyScheduleRequest request;
+    request.set_text(text);
+    pb::ApplyScheduleReply reply;
+    if (!check(client.stub().ApplySchedule(client.context().get(), request, &reply),
+               "ApplySchedule")) {
+        return false;
+    }
+    std::cout << "applied from report step " << reply.report_step() << ":";
+    for (const auto& keyword : reply.keywords()) {
+        std::cout << ' ' << keyword;
+    }
+    std::cout << '\n';
+    return true;
+}
+
+// The request must be refused as invalid.
+bool
+checkRefused(Client& client, const std::string& text)
+{
+    pb::ApplyScheduleRequest request;
+    request.set_text(text);
+    pb::ApplyScheduleReply reply;
+    const auto status = client.stub().ApplySchedule(client.context().get(), request, &reply);
+    if (status.error_code() != grpc::StatusCode::INVALID_ARGUMENT) {
+        std::cerr << "ApplySchedule should have been refused\n";
+        return false;
+    }
+    std::cout << "refused as expected: " << status.error_message().substr(0, 80) << '\n';
+    return true;
+}
 
 void
 printStep(const pb::StatusReply& status)
@@ -173,33 +215,64 @@ writePressure(Client& client, const std::string& path)
     return static_cast<bool>(out);
 }
 
+struct Options {
+    std::string endpoint;
+    std::string token;
+    std::string pressureFile;
+    std::string scheduleFile;
+    std::string refusedFile;
+    int scheduleStep = 0;
+};
+
+std::optional<Options>
+parseOptions(int argc, char** argv)
+{
+    if (argc < 2) {
+        std::cerr
+            << "Usage: control_step_client ENDPOINT [--token-file=PATH] [--pressure-file=PATH]\n"
+               "           [--schedule-file=PATH --schedule-step=N "
+               "[--refused-schedule-file=PATH]]\n";
+        return std::nullopt;
+    }
+    Options options;
+    options.endpoint = argv[1];
+    for (int i = 2; i < argc; ++i) {
+        const std::string_view arg = argv[i];
+        if (arg.starts_with("--token-file=")) {
+            options.token = readToken(std::string(arg.substr(13)));
+        } else if (arg.starts_with("--pressure-file=")) {
+            options.pressureFile = arg.substr(16);
+        } else if (arg.starts_with("--schedule-file=")) {
+            options.scheduleFile = arg.substr(16);
+        } else if (arg.starts_with("--refused-schedule-file=")) {
+            options.refusedFile = arg.substr(24);
+        } else if (arg.starts_with("--schedule-step=")) {
+            options.scheduleStep = std::stoi(std::string(arg.substr(16)));
+        } else {
+            std::cerr << "Unknown option " << arg << '\n';
+            return std::nullopt;
+        }
+    }
+    return options;
+}
+
 } // namespace
 
 int
 main(int argc, char** argv)
 {
-    if (argc < 2) {
-        std::cerr
-            << "Usage: control_step_client ENDPOINT [--token-file=PATH] [--pressure-file=PATH]\n";
+    const auto options = parseOptions(argc, argv);
+    if (!options) {
         return EXIT_FAILURE;
     }
-    std::string token;
-    std::string pressureFile;
-    for (int i = 2; i < argc; ++i) {
-        const std::string_view arg = argv[i];
-        if (arg.starts_with("--token-file=")) {
-            token = readToken(std::string(arg.substr(13)));
-        } else if (arg.starts_with("--pressure-file=")) {
-            pressureFile = arg.substr(16);
-        } else {
-            std::cerr << "Unknown option " << arg << '\n';
-            return EXIT_FAILURE;
-        }
-    }
+    const std::string& scheduleFile = options->scheduleFile;
+    const std::string& refusedFile = options->refusedFile;
+    const int scheduleStep = options->scheduleStep;
+    const std::string& pressureFile = options->pressureFile;
 
-    Client client(argv[1], token);
+    Client client(options->endpoint, options->token);
     if (!client.connect()) {
-        std::cerr << "Cannot connect to " << argv[1] << '\n';
+        std::cerr << "Cannot connect to " << options->endpoint << '\n';
         return EXIT_FAILURE;
     }
 
@@ -215,7 +288,8 @@ main(int argc, char** argv)
     // both paths are covered.
     pb::StatusReply status;
     pb::AdvanceRequest advance;
-    advance.set_report_step(std::max(1, info.report_dates_size() / 2));
+    advance.set_report_step(scheduleFile.empty() ? std::max(1, info.report_dates_size() / 2)
+                                                 : scheduleStep);
     auto advanceContext = client.context();
     auto reader = client.stub().AdvanceTo(advanceContext.get(), advance);
     while (reader->Read(&status)) {
@@ -225,6 +299,13 @@ main(int argc, char** argv)
         return EXIT_FAILURE;
     }
     std::cout << "advance stopped: " << status.stop_reason() << '\n';
+
+    if (!refusedFile.empty() && !checkRefused(client, readFile(refusedFile))) {
+        return EXIT_FAILURE;
+    }
+    if (!scheduleFile.empty() && !applySchedule(client, readFile(scheduleFile))) {
+        return EXIT_FAILURE;
+    }
 
     while (status.state() == pb::STATE_STEPPING) {
         if (!check(client.stub().Step(client.context().get(), pb::StepRequest {}, &status),

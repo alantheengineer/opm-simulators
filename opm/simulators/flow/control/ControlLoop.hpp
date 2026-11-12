@@ -269,6 +269,14 @@ namespace detail
         case CommandKind::AdvanceTo:
             reply = advance(command, driver, comm, server, info, status);
             break;
+        case CommandKind::ApplySchedule:
+            if (!canStep(status.state)) {
+                reply.code = ErrorCode::InvalidState;
+                reply.message = "No report steps left to change";
+                break;
+            }
+            reply.schedule = driver.applySchedule(command.text);
+            break;
         case CommandKind::Finish:
             if (!canFinish(status.state)) {
                 reply.code = ErrorCode::InvalidState;
@@ -313,6 +321,11 @@ namespace detail
         if (command.kind == CommandKind::GetCellData) {
             broadcastStrings(comm, command.fields);
             command.siUnits = broadcastFlag(comm, command.siUnits);
+        }
+        if (command.kind == CommandKind::ApplySchedule) {
+            std::vector<std::string> text {command.text};
+            broadcastStrings(comm, text);
+            command.text = text.front();
         }
         return command;
     }
@@ -404,6 +417,7 @@ startControlServer(const Options& options, const Comm& comm)
 //   WellData wellData(names);                        result on rank 0
 //   SummaryData summary(keys, history);              result on rank 0
 //   bool hasSummaryKey(key) const;                   rank 0
+//   ScheduleChange applySchedule(text);              every rank, same result
 //   std::optional<double> summaryValue(key) const;   rank 0
 //
 // Comm must provide rank(), broadcast(T*, int, int) and max(int).

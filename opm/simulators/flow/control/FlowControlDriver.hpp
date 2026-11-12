@@ -25,7 +25,14 @@
 
 #include <opm/common/utility/TimeService.hpp>
 
+#include <opm/input/eclipse/Deck/Deck.hpp>
+#include <opm/input/eclipse/Deck/DeckKeyword.hpp>
 #include <opm/input/eclipse/EclipseState/EclipseState.hpp>
+#include <opm/input/eclipse/Parser/ErrorGuard.hpp>
+#include <opm/input/eclipse/Parser/InputErrorAction.hpp>
+#include <opm/input/eclipse/Parser/ParseContext.hpp>
+#include <opm/input/eclipse/Parser/Parser.hpp>
+#include <opm/input/eclipse/Schedule/Action/SimulatorUpdate.hpp>
 #include <opm/input/eclipse/Schedule/Schedule.hpp>
 #include <opm/input/eclipse/Schedule/SummaryState.hpp>
 #include <opm/input/eclipse/Schedule/Well/WellEnums.hpp>
@@ -47,12 +54,14 @@
 #include <cstdint>
 #include <ctime>
 #include <limits>
+#include <memory>
 #include <numeric>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <type_traits>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #if defined(_OPENMP) && _OPENMP
@@ -372,6 +381,40 @@ public:
         return data;
     }
 
+    // Every rank. Inserts the keywords at the start of the next report step,
+    // as if written in the deck at that date. Throws BadRequest, with nothing
+    // applied, if any keyword is not allowed or cannot be applied.
+    ScheduleChange applySchedule(const std::string& text)
+    {
+        auto& vanguard = main_.getSimulatorPtr()->vanguard();
+        auto& schedule = vanguard.schedule();
+        const auto keywords = parseKeywords(text, vanguard.eclState().getDeckUnitSystem());
+
+        ScheduleChange change;
+        change.text = text;
+        change.reportStep = reportStep();
+        for (const auto& keyword : keywords) {
+            if (!allowedKeywords().contains(keyword->name())) {
+                throw BadRequest("Keyword " + keyword->name() + " is not allowed in control mode");
+            }
+            change.keywords.push_back(keyword->name());
+        }
+
+        // A trial on a copy, so that a keyword that fails leaves the run as it
+        // was.
+        const auto step = static_cast<std::size_t>(change.reportStep);
+        try {
+            Schedule trial(schedule);
+            trial.insertKeywords(keywords, step);
+        } catch (const std::exception& e) {
+            throw BadRequest(e.what());
+        }
+        const auto update = schedule.insertKeywords(keywords, step);
+        change.wells.assign(update.affected_wells.begin(), update.affected_wells.end());
+        std::sort(change.wells.begin(), change.wells.end());
+        return change;
+    }
+
     // Rank 0 only. Whether the deck asks for the key, or flow evaluates it.
     bool hasSummaryKey(const std::string& key) const
     {
@@ -393,6 +436,51 @@ private:
     static int difference(unsigned int after, unsigned int before)
     {
         return static_cast<int>(after - before);
+    }
+
+    // Keywords that only change controls, limits and transmissibility
+    // multipliers, which flow reads again at the start of each report step.
+    static const std::unordered_set<std::string>& allowedKeywords()
+    {
+        static const std::unordered_set<std::string> keywords {
+            "BOX",      "ENDBOX",   "GCONINJE", "GCONPROD", "GEFAC",  "MULTX",
+            "MULTX-",   "MULTY",    "MULTY-",   "MULTZ",    "MULTZ-", "WCONHIST",
+            "WCONINJE", "WCONINJH", "WCONPROD", "WECON",    "WEFAC",  "WELOPEN",
+            "WELTARG",  "WINJMULT", "WPIMULT",  "WTMULT",
+        };
+        return keywords;
+    }
+
+    // Parses SCHEDULE text in the deck's units. Input errors throw rather than
+    // being collected, so the error guard never ends the program.
+    static std::vector<std::unique_ptr<DeckKeyword>> parseKeywords(const std::string& text,
+                                                                   const UnitSystem& units)
+    {
+        Deck deck;
+        ErrorGuard errors;
+        try {
+            ParseContext context(InputErrorAction::THROW_EXCEPTION);
+            Parser parser;
+            parser.silent(true);
+            deck = parser.parseString(units.deck_name() + "\n\n" + text, context, errors);
+        } catch (const std::exception& e) {
+            errors.clear();
+            throw BadRequest(std::string("Cannot parse the keywords: ") + e.what());
+        }
+        if (errors) {
+            const auto message = errors.formattedErrors();
+            errors.clear();
+            throw BadRequest("Cannot parse the keywords: " + message);
+        }
+
+        std::vector<std::unique_ptr<DeckKeyword>> keywords;
+        for (std::size_t i = 1; i < deck.size(); ++i) {
+            keywords.push_back(std::make_unique<DeckKeyword>(deck[i]));
+        }
+        if (keywords.empty()) {
+            throw BadRequest("No keywords given");
+        }
+        return keywords;
     }
 
     static bool matches(std::string_view pattern, std::string_view name)
