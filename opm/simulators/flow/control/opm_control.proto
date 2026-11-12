@@ -16,6 +16,15 @@ service Control {
   rpc GetStatus(GetStatusRequest) returns (StatusReply);
   // Runs one report step.
   rpc Step(StepRequest) returns (StatusReply);
+  // Runs report steps until the target is reached, a stop condition is met
+  // or Cancel is called. Sends the status after each report step; the last
+  // one says why it stopped.
+  rpc AdvanceTo(AdvanceRequest) returns (stream StatusReply);
+  // Stops AdvanceTo at the next report step. Allowed while it runs.
+  rpc Cancel(CancelRequest) returns (CancelReply);
+  // Ends all ranks with a non-zero exit code, without writing the final
+  // output. A running command stops at the next report step first.
+  rpc Abort(AbortRequest) returns (AbortReply);
   // Writes the final output. Allowed once, after which only reads and
   // Shutdown are accepted.
   rpc Finish(FinishRequest) returns (StatusReply);
@@ -34,6 +43,39 @@ message StepRequest {}
 message FinishRequest {}
 message ShutdownRequest {}
 message ShutdownReply {}
+message CancelRequest {}
+message CancelReply {}
+
+message AbortRequest {
+  string reason = 1;
+}
+
+message AbortReply {}
+
+message StopCondition {
+  enum Comparison {
+    COMPARISON_UNSPECIFIED = 0;
+    COMPARISON_ABOVE = 1;
+    COMPARISON_BELOW = 2;
+  }
+  // Summary key, for example FOPR or WBHP:PROD.
+  string key = 1;
+  Comparison comparison = 2;
+  // In the units of the SMSPEC file.
+  double value = 3;
+}
+
+message AdvanceRequest {
+  oneof target {
+    // Number of completed report steps to reach.
+    int32 report_step = 1;
+    // The first report step that starts at or after this time, ISO 8601
+    // UTC, for example 2027-01-01T00:00:00Z.
+    string date = 2;
+  }
+  // Checked after each report step. Any one met stops the advance.
+  repeated StopCondition stop = 3;
+}
 
 message InfoReply {
   string engine_version = 1;
@@ -69,8 +111,10 @@ message StatusReply {
   double last_step_wall_seconds = 5;
   // Set when state is STATE_FAILED.
   string error = 6;
-  // Solver work in the last Step.
+  // Solver work in the last report step.
   StepReport last_step = 7;
+  // Set in the last status of AdvanceTo: why it stopped.
+  string stop_reason = 8;
 }
 
 message StepReport {

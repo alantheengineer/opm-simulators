@@ -138,7 +138,6 @@ public:
         const auto& schedule = vanguard.schedule();
 
         buildCellMap();
-        recordSummary();
 
         Info info;
         info.engineVersion = moduleVersion();
@@ -340,7 +339,7 @@ public:
             std::sort(selected.begin(), selected.end());
         }
         for (const auto& key : selected) {
-            if (summaryColumn_.find(key) == summaryColumn_.end()) {
+            if (summaryColumn_.find(key) == summaryColumn_.end() && !hasSummaryKey(key)) {
                 throw BadRequest("Unknown summary key " + key);
             }
         }
@@ -352,18 +351,36 @@ public:
         data.elapsedSeconds.assign(summaryElapsed_.begin() + static_cast<std::ptrdiff_t>(first),
                                    summaryElapsed_.end());
         for (const auto& key : selected) {
-            const std::size_t column = summaryColumn_.at(key);
+            // NaN where the key had no value yet.
+            const auto it = summaryColumn_.find(key);
             SummarySeries series;
             series.key = key;
             for (std::size_t row = first; row < summaryValues_.size(); ++row) {
                 const auto& values = summaryValues_[row];
-                series.values.push_back(column < values.size()
-                                            ? values[column]
-                                            : std::numeric_limits<double>::quiet_NaN());
+                const bool known = it != summaryColumn_.end() && it->second < values.size();
+                series.values.push_back(known ? values[it->second]
+                                              : std::numeric_limits<double>::quiet_NaN());
             }
             data.series.push_back(std::move(series));
         }
         return data;
+    }
+
+    // Rank 0 only. Whether the deck asks for the key, or flow evaluates it.
+    bool hasSummaryKey(const std::string& key) const
+    {
+        const auto& vanguard = main_.getSimulatorPtr()->vanguard();
+        return vanguard.summaryConfig().hasSummaryKey(key) || vanguard.summaryState().has(key);
+    }
+
+    // Rank 0 only. Latest value of a summary key, in SMSPEC units.
+    std::optional<double> summaryValue(const std::string& key) const
+    {
+        const auto& state = main_.getSimulatorPtr()->vanguard().summaryState();
+        if (!state.has(key)) {
+            return std::nullopt;
+        }
+        return state.get(key);
     }
 
 private:
@@ -590,8 +607,9 @@ private:
         }
     }
 
-    // Keeps the summary values at each report step on rank 0, so that a
-    // client can ask for the history.
+    // Keeps the summary values after each report step on rank 0, so that a
+    // client can ask for the history. flow first evaluates the summary in the
+    // first report step.
     void recordSummary()
     {
         auto& simulator = *main_.getSimulatorPtr();

@@ -25,6 +25,7 @@
 #include <opm/simulators/flow/control/ControlServer.hpp>
 #include <opm/simulators/flow/control/ControlTypes.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstdlib>
@@ -79,6 +80,138 @@ namespace detail
         }
     }
 
+    template <class Comm>
+    bool broadcastFlag(const Comm& comm, bool flag)
+    {
+        int value = flag ? 1 : 0;
+        comm.broadcast(&value, 1, 0);
+        return value != 0;
+    }
+
+    template <class Driver>
+    void runStep(Driver& driver, Status& status)
+    {
+        const auto start = std::chrono::steady_clock::now();
+        driver.step();
+        const std::chrono::duration<double> wall = std::chrono::steady_clock::now() - start;
+        status.lastStepWallSeconds = wall.count();
+        status.lastStep = driver.lastStep();
+        updateProgress(driver, status);
+        status.state = driver.done() ? State::Done : State::Stepping;
+    }
+
+    // Report step to advance to, worked out on rank 0. Throws BadRequest if the
+    // request cannot be met.
+    template <class Driver>
+    int resolveTarget(const Command& command,
+                      const Driver& driver,
+                      const Info& info,
+                      const Status& status)
+    {
+        int target = command.targetStep;
+        if (target < 0) {
+            const auto& date = command.date;
+            if (date.size() != 20 || date[4] != '-' || date[10] != 'T' || date.back() != 'Z') {
+                throw BadRequest("Date " + date + " is not of the form 2027-01-01T00:00:00Z");
+            }
+            const auto& dates = info.reportDates;
+            const auto it = std::find_if(
+                dates.begin(), dates.end(), [&date](const auto& d) { return d >= date; });
+            if (it == dates.end()) {
+                throw BadRequest("Date " + date + " is after the end of the schedule");
+            }
+            target = static_cast<int>(it - dates.begin());
+        }
+        if (target <= status.reportStep) {
+            throw BadRequest("Report step " + std::to_string(target) + " is already done");
+        }
+        if (target > status.reportStepsTotal) {
+            throw BadRequest("The schedule has " + std::to_string(status.reportStepsTotal)
+                             + " report steps");
+        }
+        for (const auto& stop : command.stops) {
+            if (!driver.hasSummaryKey(stop.key)) {
+                throw BadRequest("Unknown summary key " + stop.key);
+            }
+        }
+        return target;
+    }
+
+    // Why an advance should stop after this report step, decided on rank 0.
+    // Empty to carry on.
+    template <class Driver>
+    std::string
+    stopReason(const Command& command, const Driver& driver, const ControlServer& server)
+    {
+        if (server.abortRequested()) {
+            return "Aborted";
+        }
+        if (server.cancelRequested()) {
+            return "Cancelled";
+        }
+        for (const auto& stop : command.stops) {
+            const auto value = driver.summaryValue(stop.key);
+            if (value && (stop.above ? *value > stop.value : *value < stop.value)) {
+                return stop.key + (stop.above ? " above " : " below ") + std::to_string(stop.value);
+            }
+        }
+        return {};
+    }
+
+    template <class Driver, class Comm>
+    Reply advance(const Command& command,
+                  Driver& driver,
+                  const Comm& comm,
+                  ControlServer* server,
+                  const Info& info,
+                  Status& status)
+    {
+        Reply reply;
+        if (!canStep(status.state)) {
+            reply.code = ErrorCode::InvalidState;
+            reply.message = "No report steps left to run";
+            return reply;
+        }
+
+        // Rank 0 checks the request and every rank learns the result, so a bad
+        // request is refused everywhere.
+        int target = -1;
+        std::string error;
+        if (server) {
+            try {
+                target = resolveTarget(command, driver, info, status);
+            } catch (const BadRequest& e) {
+                error = e.what();
+            }
+        }
+        comm.broadcast(&target, 1, 0);
+        if (target < 0) {
+            throw BadRequest(error.empty() ? "Bad AdvanceTo request" : error);
+        }
+
+        // Rank 0 decides after each report step whether to stop and sends the
+        // reason with that step's status, so the last one carries it.
+        std::string reason;
+        for (;;) {
+            runStep(driver, status);
+            if (server) {
+                reason = stopReason(command, driver, *server);
+                if (reason.empty() && status.state == State::Done) {
+                    reason = "End of schedule";
+                } else if (reason.empty() && status.reportStep >= target) {
+                    reason = "Reached report step " + std::to_string(status.reportStep);
+                }
+                status.stopReason = reason;
+                server->publishStatus(status);
+                server->progress(status);
+            }
+            if (broadcastFlag(comm, !reason.empty())) {
+                break;
+            }
+        }
+        return reply;
+    }
+
     template <class Driver>
     Reply read(const Command& command, Driver& driver)
     {
@@ -101,9 +234,14 @@ namespace detail
 
     // Runs one command on this rank. Throws BadRequest for a bad request and
     // anything else if the simulator fails.
-    template <class Driver>
-    Reply execute(
-        const Command& command, Driver& driver, const Info& info, Status& status, int& exitStatus)
+    template <class Driver, class Comm>
+    Reply execute(const Command& command,
+                  Driver& driver,
+                  const Comm& comm,
+                  ControlServer* server,
+                  const Info& info,
+                  Status& status,
+                  int& exitStatus)
     {
         Reply reply;
         switch (command.kind) {
@@ -120,21 +258,17 @@ namespace detail
             }
             reply = read(command, driver);
             break;
-        case CommandKind::Step: {
+        case CommandKind::Step:
             if (!canStep(status.state)) {
                 reply.code = ErrorCode::InvalidState;
                 reply.message = "No report steps left to run";
                 break;
             }
-            const auto start = std::chrono::steady_clock::now();
-            driver.step();
-            const std::chrono::duration<double> wall = std::chrono::steady_clock::now() - start;
-            status.lastStepWallSeconds = wall.count();
-            status.lastStep = driver.lastStep();
-            updateProgress(driver, status);
-            status.state = driver.done() ? State::Done : State::Stepping;
+            runStep(driver, status);
             break;
-        }
+        case CommandKind::AdvanceTo:
+            reply = advance(command, driver, comm, server, info, status);
+            break;
         case CommandKind::Finish:
             if (!canFinish(status.state)) {
                 reply.code = ErrorCode::InvalidState;
@@ -149,6 +283,11 @@ namespace detail
                 exitStatus = driver.finish();
                 status.state = State::Finished;
             }
+            break;
+        case CommandKind::Abort:
+            status.state = State::Failed;
+            status.error = command.reason.empty() ? "Aborted" : "Aborted: " + command.reason;
+            exitStatus = EXIT_FAILURE;
             break;
         }
         return reply;
@@ -173,9 +312,7 @@ namespace detail
         command.kind = static_cast<CommandKind>(kind);
         if (command.kind == CommandKind::GetCellData) {
             broadcastStrings(comm, command.fields);
-            int si = command.siUnits ? 1 : 0;
-            comm.broadcast(&si, 1, 0);
-            command.siUnits = si != 0;
+            command.siUnits = broadcastFlag(comm, command.siUnits);
         }
         return command;
     }
@@ -186,6 +323,7 @@ namespace detail
     Reply executeOnAllRanks(const Command& command,
                             Driver& driver,
                             const Comm& comm,
+                            ControlServer* server,
                             const Info& info,
                             Status& status,
                             int& exitStatus)
@@ -193,11 +331,12 @@ namespace detail
         Reply reply;
         std::string error;
         bool failed = false;
+        status.stopReason.clear();
         try {
-            reply = execute(command, driver, info, status, exitStatus);
+            reply = execute(command, driver, comm, server, info, status, exitStatus);
         } catch (const BadRequest& e) {
-            // Each rank checks the same request before any communication, so
-            // they agree.
+            // Every rank either checks the same request or learns rank 0's
+            // verdict, so they agree.
             reply = Reply {};
             reply.code = ErrorCode::InvalidArgument;
             reply.message = e.what();
@@ -264,6 +403,8 @@ startControlServer(const Options& options, const Comm& comm)
 //   CellData cellData(fields, siUnits, selection);   collective, result on rank 0
 //   WellData wellData(names);                        result on rank 0
 //   SummaryData summary(keys, history);              result on rank 0
+//   bool hasSummaryKey(key) const;                   rank 0
+//   std::optional<double> summaryValue(key) const;   rank 0
 //
 // Comm must provide rank(), broadcast(T*, int, int) and max(int).
 template <class Driver, class Comm>
@@ -283,14 +424,21 @@ runControlLoop(Driver& driver, const Comm& comm, ControlServer* server)
     for (;;) {
         bool timedOut = false;
         const Command command = detail::receive(server, comm, timedOut);
-        Reply reply = detail::executeOnAllRanks(command, driver, comm, info, status, exitStatus);
+        Reply reply
+            = detail::executeOnAllRanks(command, driver, comm, server, info, status, exitStatus);
         if (server) {
             server->publishStatus(status);
             if (!timedOut) {
                 server->reply(std::move(reply));
             }
         }
-        if (command.kind == CommandKind::Shutdown) {
+        if (command.kind == CommandKind::Shutdown || command.kind == CommandKind::Abort) {
+            break;
+        }
+        // Abort during a command ends the run once that command is done.
+        if (detail::broadcastFlag(comm, server && server->abortRequested())) {
+            status.state = State::Failed;
+            exitStatus = EXIT_FAILURE;
             break;
         }
     }

@@ -26,11 +26,14 @@
 #include <grpcpp/grpcpp.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <future>
+#include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -107,6 +110,7 @@ namespace
         out.set_elapsed_seconds(status.elapsedSeconds);
         out.set_last_step_wall_seconds(status.lastStepWallSeconds);
         out.set_error(status.error);
+        out.set_stop_reason(status.stopReason);
         auto& step = *out.mutable_last_step();
         step.set_time_steps(status.lastStep.timeSteps);
         step.set_cuts(status.lastStep.cuts);
@@ -180,6 +184,29 @@ namespace
         return command;
     }
 
+    // Empty if the request is well formed.
+    std::string toCommand(const pb::AdvanceRequest& request, Command& command)
+    {
+        command.kind = CommandKind::AdvanceTo;
+        if (request.has_report_step()) {
+            command.targetStep = request.report_step();
+        } else if (request.has_date()) {
+            command.date = request.date();
+        } else {
+            return "AdvanceTo needs a report step or a date";
+        }
+        for (const auto& stop : request.stop()) {
+            if (stop.key().empty()
+                || stop.comparison() == pb::StopCondition::COMPARISON_UNSPECIFIED) {
+                return "A stop condition needs a key and a comparison";
+            }
+            command.stops.push_back({stop.key(),
+                                     stop.comparison() == pb::StopCondition::COMPARISON_ABOVE,
+                                     stop.value()});
+        }
+        return {};
+    }
+
     // Sends each field in chunks. False if the client went away.
     bool writeChunks(const CellData& data, grpc::ServerWriter<pb::CellDataChunk>& writer)
     {
@@ -246,15 +273,15 @@ public:
             std::lock_guard lock(mutex_);
             closed_ = true;
             const Reply ended = failure(ErrorCode::InvalidState, "Simulation has ended");
-            if (pending_) {
-                pending_->promise.set_value(ended);
-                pending_.reset();
-            }
-            if (current_) {
-                current_->set_value(ended);
-                current_.reset();
+            for (auto* command : {&pending_, &current_}) {
+                if (*command) {
+                    (*command)->progress->done = true;
+                    (*command)->promise.set_value(ended);
+                    command->reset();
+                }
             }
         }
+        progressCv_.notify_all();
         server_->Shutdown(std::chrono::system_clock::now() + std::chrono::seconds(2));
     }
 
@@ -271,24 +298,39 @@ public:
     std::optional<Command> waitForCommand()
     {
         std::unique_lock lock(mutex_);
-        if (!cv_.wait_for(lock, idleTimeout_, [this] { return pending_.has_value(); })) {
+        const bool woken
+            = cv_.wait_for(lock, idleTimeout_, [this] { return pending_.has_value() || abort_; });
+        if (!woken) {
             return std::nullopt;
         }
+        if (abort_ && !pending_) {
+            Command abort;
+            abort.kind = CommandKind::Abort;
+            abort.reason = abortReason_;
+            return abort;
+        }
         Command command = std::move(pending_->command);
-        current_ = std::move(pending_->promise);
+        current_ = std::move(pending_);
         pending_.reset();
+        if (!abort_) {
+            cancel_ = false;
+        }
         return command;
     }
 
     void reply(Reply reply)
     {
-        std::optional<std::promise<Reply>> promise;
+        std::optional<Pending> current;
         {
             std::lock_guard lock(mutex_);
-            promise.swap(current_);
+            current.swap(current_);
+            if (current) {
+                current->progress->done = true;
+            }
         }
-        if (promise) {
-            promise->set_value(std::move(reply));
+        progressCv_.notify_all();
+        if (current) {
+            current->promise.set_value(std::move(reply));
         }
     }
 
@@ -296,6 +338,33 @@ public:
     {
         std::lock_guard lock(mutex_);
         status_ = status;
+    }
+
+    void progress(const Status& status)
+    {
+        {
+            std::lock_guard lock(mutex_);
+            if (current_) {
+                current_->progress->statuses.push_back(status);
+            }
+        }
+        progressCv_.notify_all();
+    }
+
+    bool cancelRequested() const
+    {
+        return cancel_;
+    }
+
+    bool abortRequested() const
+    {
+        return abort_;
+    }
+
+    std::string abortReason() const
+    {
+        std::lock_guard lock(mutex_);
+        return abortReason_;
     }
 
     grpc::Status
@@ -324,6 +393,71 @@ public:
         const Reply reply = submit(context, CommandKind::Step);
         fill(reply.status, *out);
         return toGrpc(reply);
+    }
+
+    grpc::Status AdvanceTo(grpc::ServerContext* context,
+                           const pb::AdvanceRequest* request,
+                           grpc::ServerWriter<pb::StatusReply>* writer) override
+    {
+        Command command;
+        if (const auto error = toCommand(*request, command); !error.empty()) {
+            return {grpc::StatusCode::INVALID_ARGUMENT, error};
+        }
+        std::future<Reply> future;
+        std::shared_ptr<Progress> progress;
+        if (const auto refused = enqueue(*context, std::move(command), future, progress)) {
+            return toGrpc(*refused);
+        }
+
+        // A client that goes away cancels the advance.
+        bool streaming = true;
+        for (bool done = false; !done;) {
+            std::deque<Status> statuses;
+            {
+                std::unique_lock lock(mutex_);
+                progressCv_.wait(
+                    lock, [&progress] { return !progress->statuses.empty() || progress->done; });
+                statuses.swap(progress->statuses);
+                done = progress->done;
+            }
+            for (const auto& status : statuses) {
+                pb::StatusReply message;
+                fill(status, message);
+                if (streaming && !writer->Write(message)) {
+                    streaming = false;
+                    cancel_ = true;
+                }
+            }
+        }
+
+        // The last status sent already carries the stop reason.
+        return toGrpc(future.get());
+    }
+
+    grpc::Status
+    Cancel(grpc::ServerContext* context, const pb::CancelRequest*, pb::CancelReply*) override
+    {
+        if (!authorised(*context)) {
+            return {grpc::StatusCode::UNAUTHENTICATED, "Missing or wrong token"};
+        }
+        cancel_ = true;
+        return grpc::Status::OK;
+    }
+
+    grpc::Status
+    Abort(grpc::ServerContext* context, const pb::AbortRequest* request, pb::AbortReply*) override
+    {
+        if (!authorised(*context)) {
+            return {grpc::StatusCode::UNAUTHENTICATED, "Missing or wrong token"};
+        }
+        {
+            std::lock_guard lock(mutex_);
+            abortReason_ = request->reason();
+            abort_ = true;
+            cancel_ = true;
+        }
+        cv_.notify_one();
+        return grpc::Status::OK;
     }
 
     grpc::Status
@@ -383,9 +517,16 @@ public:
     }
 
 private:
+    // Statuses sent while a command runs, for AdvanceTo.
+    struct Progress {
+        std::deque<Status> statuses;
+        bool done = false;
+    };
+
     struct Pending {
         Command command;
         std::promise<Reply> promise;
+        std::shared_ptr<Progress> progress;
     };
 
     bool authorised(const grpc::ServerContext& context) const
@@ -399,6 +540,32 @@ private:
             && std::string_view(it->second.data(), it->second.size()) == "Bearer " + token_;
     }
 
+    // Queues the command for the simulator thread. Returns the reason if it
+    // is refused.
+    std::optional<Reply> enqueue(const grpc::ServerContext& context,
+                                 Command command,
+                                 std::future<Reply>& future,
+                                 std::shared_ptr<Progress>& progress)
+    {
+        if (!authorised(context)) {
+            return failure(ErrorCode::Unauthenticated, "Missing or wrong token");
+        }
+        {
+            std::lock_guard lock(mutex_);
+            if (closed_ || abort_) {
+                return failure(ErrorCode::InvalidState, "Simulation has ended");
+            }
+            if (pending_ || current_) {
+                return failure(ErrorCode::Busy, "Another command is in progress");
+            }
+            progress = std::make_shared<Progress>();
+            pending_.emplace(Pending {std::move(command), {}, progress});
+            future = pending_->promise.get_future();
+        }
+        cv_.notify_one();
+        return std::nullopt;
+    }
+
     Reply submit(const grpc::ServerContext* context, CommandKind kind)
     {
         Command command;
@@ -409,22 +576,11 @@ private:
     // Hands the command to the simulator thread and waits for its reply.
     Reply submit(const grpc::ServerContext* context, Command command)
     {
-        if (!authorised(*context)) {
-            return failure(ErrorCode::Unauthenticated, "Missing or wrong token");
-        }
         std::future<Reply> future;
-        {
-            std::lock_guard lock(mutex_);
-            if (closed_) {
-                return failure(ErrorCode::InvalidState, "Simulation has ended");
-            }
-            if (pending_ || current_) {
-                return failure(ErrorCode::Busy, "Another command is in progress");
-            }
-            pending_.emplace(Pending {std::move(command), {}});
-            future = pending_->promise.get_future();
+        std::shared_ptr<Progress> progress;
+        if (auto refused = enqueue(*context, std::move(command), future, progress)) {
+            return std::move(*refused);
         }
-        cv_.notify_one();
         return future.get();
     }
 
@@ -433,12 +589,16 @@ private:
     int port_ = 0;
     std::unique_ptr<grpc::Server> server_;
 
-    std::mutex mutex_;
+    mutable std::mutex mutex_;
     std::condition_variable cv_;
+    std::condition_variable progressCv_;
     std::optional<Pending> pending_;
-    std::optional<std::promise<Reply>> current_;
+    std::optional<Pending> current_;
     Status status_;
     bool closed_ = false;
+    std::atomic<bool> cancel_ {false};
+    std::atomic<bool> abort_ {false};
+    std::string abortReason_;
 };
 
 ControlServer::ControlServer(const Options& options)
@@ -470,6 +630,30 @@ void
 ControlServer::publishStatus(const Status& status)
 {
     impl_->publishStatus(status);
+}
+
+void
+ControlServer::progress(const Status& status)
+{
+    impl_->progress(status);
+}
+
+bool
+ControlServer::cancelRequested() const
+{
+    return impl_->cancelRequested();
+}
+
+bool
+ControlServer::abortRequested() const
+{
+    return impl_->abortRequested();
+}
+
+std::string
+ControlServer::abortReason() const
+{
+    return impl_->abortReason();
 }
 
 } // namespace Opm::Control

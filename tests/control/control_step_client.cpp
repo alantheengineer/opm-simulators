@@ -21,6 +21,7 @@
 
 #include <grpcpp/grpcpp.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <fstream>
@@ -99,6 +100,16 @@ private:
     std::unique_ptr<pb::Control::Stub> stub_;
     std::string token_;
 };
+
+void
+printStep(const pb::StatusReply& status)
+{
+    const auto& step = status.last_step();
+    std::cout << "step " << status.report_step() << '/' << status.report_steps_total() << ", "
+              << step.time_steps() << " time steps, " << step.cuts() << " cuts, "
+              << step.newton_iterations() << " Newton, " << step.linear_iterations()
+              << " linear, wall " << status.last_step_wall_seconds() << " s\n";
+}
 
 bool
 printWells(Client& client)
@@ -200,18 +211,28 @@ main(int argc, char** argv)
     std::cout << "engine " << info.engine_version() << ", ranks " << info.ranks() << ", threads "
               << info.threads_per_rank() << ", active cells " << info.active_cells() << '\n';
 
+    // The first half with AdvanceTo, the rest one Step at a time, so that
+    // both paths are covered.
     pb::StatusReply status;
-    do {
+    pb::AdvanceRequest advance;
+    advance.set_report_step(std::max(1, info.report_dates_size() / 2));
+    auto advanceContext = client.context();
+    auto reader = client.stub().AdvanceTo(advanceContext.get(), advance);
+    while (reader->Read(&status)) {
+        printStep(status);
+    }
+    if (!check(reader->Finish(), "AdvanceTo")) {
+        return EXIT_FAILURE;
+    }
+    std::cout << "advance stopped: " << status.stop_reason() << '\n';
+
+    while (status.state() == pb::STATE_STEPPING) {
         if (!check(client.stub().Step(client.context().get(), pb::StepRequest {}, &status),
                    "Step")) {
             return EXIT_FAILURE;
         }
-        const auto& step = status.last_step();
-        std::cout << "step " << status.report_step() << '/' << status.report_steps_total() << ", "
-                  << step.time_steps() << " time steps, " << step.cuts() << " cuts, "
-                  << step.newton_iterations() << " Newton, " << step.linear_iterations()
-                  << " linear, wall " << status.last_step_wall_seconds() << " s\n";
-    } while (status.state() == pb::STATE_STEPPING);
+        printStep(status);
+    }
 
     if (!printWells(client) || !printOilRate(client)) {
         return EXIT_FAILURE;
