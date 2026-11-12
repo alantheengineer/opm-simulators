@@ -80,6 +80,7 @@ jobs:
           cmake -S opm-simulators -B build/sim -G Ninja -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DBUILD_FLOW_VARIANTS=OFF -DOPM_ENABLE_PYTHON=OFF -DUSE_OPENCL=OFF -DUSE_GPU_BRIDGE=OFF \
+            -DOPM_ENABLE_CONTROL_SERVER=ON \
             -Dopm-common_DIR="$PWD/build/common" -Dopm-grid_DIR="$PWD/build/grid"
       - name: Strict warnings and clang-tidy on changed sources
         if: github.event_name == 'pull_request'

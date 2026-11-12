@@ -23,3 +23,7 @@ openmpi-bin
 libtrilinos-zoltan-dev
 libmetis-dev
 libhdf5-mpi-dev
+libgrpc++-dev
+libprotobuf-dev
+protobuf-compiler
+protobuf-compiler-grpc
