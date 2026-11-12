@@ -28,11 +28,14 @@
 
 #include <grpcpp/grpcpp.h>
 
+#include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <future>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace
 {
@@ -45,7 +48,8 @@ struct SerialComm {
     {
         return 0;
     }
-    int broadcast(int*, int, int) const
+    template <class T>
+    int broadcast(T*, int, int) const
     {
         return 0;
     }
@@ -100,6 +104,72 @@ struct FakeDriver {
         finished = true;
         return EXIT_SUCCESS;
     }
+    StepReport lastStep() const
+    {
+        StepReport report;
+        report.timeSteps = 2;
+        report.cuts = 1;
+        report.newtonIterations = 7;
+        return report;
+    }
+    CellData cellData(const std::vector<std::string>& fields,
+                      bool siUnits,
+                      const CellSelection& selection) const
+    {
+        CellData data;
+        for (const auto& name : fields) {
+            if (name != "PRESSURE") {
+                throw BadRequest("Unknown field " + name);
+            }
+            CellField field;
+            field.name = name;
+            field.unit = siUnits ? "PA" : "BARSA";
+            field.values.resize(cells);
+            for (std::size_t i = 0; i < cells; ++i) {
+                field.values[i] = static_cast<double>(i);
+            }
+            data.fields.push_back(std::move(field));
+        }
+        if (selection.mode == CellSelection::Mode::Box) {
+            data.cells = {4, 5, 6};
+            for (auto& field : data.fields) {
+                field.values = {4.0, 5.0, 6.0};
+            }
+        }
+        return data;
+    }
+    WellData wellData(const std::vector<std::string>&) const
+    {
+        WellData data;
+        WellValues prod;
+        prod.name = "PROD";
+        prod.status = "OPEN";
+        prod.control = "ORAT";
+        prod.oilRate = -100.0;
+        data.wells.push_back(prod);
+        data.liquidRateUnit = "SM3/DAY";
+        return data;
+    }
+    SummaryData summary(const std::vector<std::string>& keys, bool history) const
+    {
+        SummaryData data;
+        const int first = history ? 0 : current;
+        for (int i = first; i <= current; ++i) {
+            data.reportSteps.push_back(i);
+            data.elapsedSeconds.push_back(86400.0 * i);
+        }
+        for (const auto& key : keys) {
+            SummarySeries series;
+            series.key = key;
+            for (int i = first; i <= current; ++i) {
+                series.values.push_back(10.0 * i);
+            }
+            data.series.push_back(std::move(series));
+        }
+        return data;
+    }
+
+    std::size_t cells = 600000;
 };
 
 Options
@@ -311,4 +381,155 @@ BOOST_AUTO_TEST_CASE(PendingRequestReleasedOnDestruction)
     server.reset();
     pending.get();
     BOOST_CHECK_EQUAL(status.error_code(), grpc::StatusCode::FAILED_PRECONDITION);
+}
+
+namespace
+{
+
+std::vector<pb::CellDataChunk>
+readCells(pb::Control::Stub& client, const pb::CellDataRequest& request, grpc::Status& status)
+{
+    grpc::ClientContext context;
+    auto reader = client.GetCellData(&context, request);
+    std::vector<pb::CellDataChunk> chunks;
+    pb::CellDataChunk chunk;
+    while (reader->Read(&chunk)) {
+        chunks.push_back(chunk);
+    }
+    status = reader->Finish();
+    return chunks;
+}
+
+} // namespace
+
+BOOST_AUTO_TEST_CASE(CellDataIsStreamedInChunks)
+{
+    Fixture f;
+    pb::CellDataRequest request;
+    request.add_fields("PRESSURE");
+    grpc::Status status;
+    const auto chunks = readCells(*f.client, request, status);
+    BOOST_REQUIRE(status.ok());
+    BOOST_REQUIRE_EQUAL(chunks.size(), 3U);
+
+    std::vector<double> values;
+    for (const auto& chunk : chunks) {
+        BOOST_CHECK_EQUAL(chunk.field(), "PRESSURE");
+        BOOST_CHECK_EQUAL(chunk.unit(), "BARSA");
+        BOOST_CHECK_EQUAL(chunk.total(), 600000);
+        BOOST_CHECK_EQUAL(chunk.offset(), static_cast<std::int64_t>(values.size()));
+        values.insert(values.end(), chunk.values().begin(), chunk.values().end());
+    }
+    BOOST_REQUIRE_EQUAL(values.size(), 600000U);
+    BOOST_CHECK_EQUAL(values.front(), 0.0);
+    BOOST_CHECK_EQUAL(values.back(), 599999.0);
+
+    BOOST_REQUIRE(shutdown(*f.client).ok());
+    BOOST_CHECK_EQUAL(f.exitStatus.get(), EXIT_SUCCESS);
+}
+
+BOOST_AUTO_TEST_CASE(BoxSelectionSendsCells)
+{
+    Fixture f;
+    pb::CellDataRequest request;
+    request.add_fields("PRESSURE");
+    request.set_si_units(true);
+    auto& box = *request.mutable_box();
+    box.set_i1(1);
+    box.set_i2(1);
+    box.set_j1(1);
+    box.set_j2(1);
+    box.set_k1(1);
+    box.set_k2(3);
+    grpc::Status status;
+    const auto chunks = readCells(*f.client, request, status);
+    BOOST_REQUIRE(status.ok());
+    BOOST_REQUIRE_EQUAL(chunks.size(), 1U);
+    BOOST_CHECK_EQUAL(chunks[0].unit(), "PA");
+    BOOST_CHECK_EQUAL(chunks[0].cells_size(), 3);
+    BOOST_CHECK_EQUAL(chunks[0].cells(2), 6);
+    BOOST_CHECK_EQUAL(chunks[0].values(0), 4.0);
+
+    BOOST_REQUIRE(shutdown(*f.client).ok());
+    f.exitStatus.get();
+}
+
+BOOST_AUTO_TEST_CASE(BadRequestLeavesTheRunUsable)
+{
+    Fixture f;
+    pb::CellDataRequest request;
+    request.add_fields("NOSUCHFIELD");
+    grpc::Status status;
+    readCells(*f.client, request, status);
+    BOOST_CHECK_EQUAL(status.error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+    BOOST_CHECK_EQUAL(status.error_message(), "Unknown field NOSUCHFIELD");
+
+    pb::CellDataRequest empty;
+    readCells(*f.client, empty, status);
+    BOOST_CHECK_EQUAL(status.error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+
+    const auto reply = step(*f.client, status);
+    BOOST_REQUIRE(status.ok());
+    BOOST_CHECK_EQUAL(reply.state(), pb::STATE_STEPPING);
+    BOOST_CHECK_EQUAL(reply.last_step().time_steps(), 2);
+    BOOST_CHECK_EQUAL(reply.last_step().cuts(), 1);
+    BOOST_CHECK_EQUAL(reply.last_step().newton_iterations(), 7);
+
+    BOOST_REQUIRE(shutdown(*f.client).ok());
+    BOOST_CHECK_EQUAL(f.exitStatus.get(), EXIT_SUCCESS);
+}
+
+BOOST_AUTO_TEST_CASE(WellsAndSummary)
+{
+    Fixture f;
+    grpc::Status status;
+    step(*f.client, status);
+    step(*f.client, status);
+    BOOST_REQUIRE(status.ok());
+
+    grpc::ClientContext wellContext;
+    pb::WellDataReply wells;
+    BOOST_REQUIRE(f.client->GetWellData(&wellContext, pb::WellDataRequest {}, &wells).ok());
+    BOOST_REQUIRE_EQUAL(wells.wells_size(), 1);
+    BOOST_CHECK_EQUAL(wells.wells(0).name(), "PROD");
+    BOOST_CHECK_EQUAL(wells.wells(0).control(), "ORAT");
+    BOOST_CHECK_EQUAL(wells.wells(0).oil_rate(), -100.0);
+    BOOST_CHECK_EQUAL(wells.liquid_rate_unit(), "SM3/DAY");
+
+    pb::SummaryRequest request;
+    request.add_keys("FOPR");
+    request.set_history(true);
+    grpc::ClientContext historyContext;
+    pb::SummaryReply history;
+    BOOST_REQUIRE(f.client->GetSummary(&historyContext, request, &history).ok());
+    BOOST_CHECK_EQUAL(history.report_steps_size(), 3);
+    BOOST_REQUIRE_EQUAL(history.series_size(), 1);
+    BOOST_CHECK_EQUAL(history.series(0).values(2), 20.0);
+
+    request.set_history(false);
+    grpc::ClientContext latestContext;
+    pb::SummaryReply latest;
+    BOOST_REQUIRE(f.client->GetSummary(&latestContext, request, &latest).ok());
+    BOOST_CHECK_EQUAL(latest.report_steps_size(), 1);
+    BOOST_CHECK_EQUAL(latest.report_steps(0), 2);
+
+    BOOST_REQUIRE(shutdown(*f.client).ok());
+    f.exitStatus.get();
+}
+
+BOOST_AUTO_TEST_CASE(NoReadsAfterFailure)
+{
+    Fixture f;
+    f.driver.failAt = 0;
+    grpc::Status status;
+    step(*f.client, status);
+    BOOST_CHECK_EQUAL(status.error_code(), grpc::StatusCode::INTERNAL);
+
+    grpc::ClientContext context;
+    pb::WellDataReply wells;
+    BOOST_CHECK_EQUAL(f.client->GetWellData(&context, pb::WellDataRequest {}, &wells).error_code(),
+                      grpc::StatusCode::FAILED_PRECONDITION);
+
+    BOOST_REQUIRE(shutdown(*f.client).ok());
+    BOOST_CHECK_EQUAL(f.exitStatus.get(), EXIT_FAILURE);
 }

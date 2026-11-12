@@ -21,6 +21,11 @@ service Control {
   rpc Finish(FinishRequest) returns (StatusReply);
   // Ends all ranks. Finishes first if Finish has not been called.
   rpc Shutdown(ShutdownRequest) returns (ShutdownReply);
+
+  // Cell values at the current report step, streamed in chunks.
+  rpc GetCellData(CellDataRequest) returns (stream CellDataChunk);
+  rpc GetWellData(WellDataRequest) returns (WellDataReply);
+  rpc GetSummary(SummaryRequest) returns (SummaryReply);
 }
 
 message GetInfoRequest {}
@@ -64,4 +69,114 @@ message StatusReply {
   double last_step_wall_seconds = 5;
   // Set when state is STATE_FAILED.
   string error = 6;
+  // Solver work in the last Step.
+  StepReport last_step = 7;
+}
+
+message StepReport {
+  // Accepted time steps.
+  int32 time_steps = 1;
+  // Time steps that failed and were retried with a shorter step.
+  int32 cuts = 2;
+  int32 newton_iterations = 3;
+  int32 linear_iterations = 4;
+  // Newton iterations spent in the failed time steps.
+  int32 wasted_newton_iterations = 5;
+}
+
+// IJK box, 1-based and inclusive, as in the deck.
+message CellBox {
+  int32 i1 = 1;
+  int32 i2 = 2;
+  int32 j1 = 3;
+  int32 j2 = 4;
+  int32 k1 = 5;
+  int32 k2 = 6;
+}
+
+message CellIndices {
+  // Global active cell indices, 0-based, in the order of the INIT and
+  // restart files.
+  repeated int64 active = 1;
+}
+
+message CellDataRequest {
+  // Field names as in the restart file, for example PRESSURE or SWAT.
+  repeated string fields = 1;
+  // All active cells when neither is set.
+  oneof selection {
+    CellIndices indices = 2;
+    CellBox box = 3;
+  }
+  // SI units instead of the deck units.
+  bool si_units = 4;
+}
+
+// The fields are sent one after another, each in one or more chunks.
+message CellDataChunk {
+  string field = 1;
+  string unit = 2;
+  // Position of the first value in the selection.
+  int64 offset = 3;
+  // Number of values in the selection.
+  int64 total = 4;
+  repeated double values = 5;
+  // Active indices of the selected cells. Sent in the first chunk of the
+  // reply when the selection is a box.
+  repeated int64 cells = 6;
+}
+
+message WellDataRequest {
+  // Well names. A trailing * matches any suffix. All wells when empty.
+  repeated string wells = 1;
+}
+
+message WellData {
+  string name = 1;
+  // OPEN, STOP or SHUT.
+  string status = 2;
+  bool injector = 3;
+  // Active control mode, for example ORAT, RESV or BHP.
+  string control = 4;
+  // Surface rates. Positive into the reservoir, negative out of it.
+  double oil_rate = 5;
+  double water_rate = 6;
+  double gas_rate = 7;
+  double bhp = 8;
+  double thp = 9;
+  double temperature = 10;
+  // Salt mass rate, when the model has brine.
+  double salt_rate = 11;
+}
+
+message WellDataReply {
+  repeated WellData wells = 1;
+  // Units of the values above.
+  string liquid_rate_unit = 2;
+  string gas_rate_unit = 3;
+  string pressure_unit = 4;
+  string temperature_unit = 5;
+  string salt_rate_unit = 6;
+}
+
+message SummaryRequest {
+  // Summary keys as in the SMSPEC file, for example FOPR or WBHP:PROD.
+  // All evaluated keys when empty.
+  repeated string keys = 1;
+  // The value at every report step so far instead of only the latest.
+  bool history = 2;
+}
+
+message SummarySeries {
+  string key = 1;
+  // One value per entry in report_steps, in the units of the SMSPEC file.
+  repeated double values = 2;
+}
+
+message SummaryReply {
+  repeated int32 report_steps = 1;
+  // Simulated time since the start of the schedule at each report step,
+  // seconds.
+  repeated double elapsed_seconds = 2;
+  repeated SummarySeries series = 3;
 }

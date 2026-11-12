@@ -26,12 +26,14 @@
 #include <opm/simulators/flow/control/ControlTypes.hpp>
 
 #include <chrono>
+#include <cstddef>
 #include <cstdlib>
 #include <exception>
 #include <memory>
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace Opm::Control
 {
@@ -57,15 +59,66 @@ namespace detail
         return canStep(state) || state == State::Done;
     }
 
-    // Runs one command on this rank. Throws if the simulator fails.
+    inline bool canRead(State state)
+    {
+        return state != State::Failed;
+    }
+
+    // Sends rank 0's strings to every rank.
+    template <class Comm>
+    void broadcastStrings(const Comm& comm, std::vector<std::string>& strings)
+    {
+        int count = static_cast<int>(strings.size());
+        comm.broadcast(&count, 1, 0);
+        strings.resize(static_cast<std::size_t>(count));
+        for (auto& text : strings) {
+            int length = static_cast<int>(text.size());
+            comm.broadcast(&length, 1, 0);
+            text.resize(static_cast<std::size_t>(length));
+            comm.broadcast(text.data(), length, 0);
+        }
+    }
+
     template <class Driver>
-    Reply
-    execute(CommandKind command, Driver& driver, const Info& info, Status& status, int& exitStatus)
+    Reply read(const Command& command, Driver& driver)
     {
         Reply reply;
-        switch (command) {
+        switch (command.kind) {
+        case CommandKind::GetCellData:
+            reply.cellData = driver.cellData(command.fields, command.siUnits, command.cells);
+            break;
+        case CommandKind::GetWellData:
+            reply.wellData = driver.wellData(command.names);
+            break;
+        case CommandKind::GetSummary:
+            reply.summary = driver.summary(command.names, command.history);
+            break;
+        default:
+            break;
+        }
+        return reply;
+    }
+
+    // Runs one command on this rank. Throws BadRequest for a bad request and
+    // anything else if the simulator fails.
+    template <class Driver>
+    Reply execute(
+        const Command& command, Driver& driver, const Info& info, Status& status, int& exitStatus)
+    {
+        Reply reply;
+        switch (command.kind) {
         case CommandKind::GetInfo:
             reply.info = info;
+            break;
+        case CommandKind::GetCellData:
+        case CommandKind::GetWellData:
+        case CommandKind::GetSummary:
+            if (!canRead(status.state)) {
+                reply.code = ErrorCode::InvalidState;
+                reply.message = "No data after a failure";
+                break;
+            }
+            reply = read(command, driver);
             break;
         case CommandKind::Step: {
             if (!canStep(status.state)) {
@@ -77,6 +130,7 @@ namespace detail
             driver.step();
             const std::chrono::duration<double> wall = std::chrono::steady_clock::now() - start;
             status.lastStepWallSeconds = wall.count();
+            status.lastStep = driver.lastStep();
             updateProgress(driver, status);
             status.state = driver.done() ? State::Done : State::Stepping;
             break;
@@ -103,23 +157,33 @@ namespace detail
     // Waits for a command on rank 0 and broadcasts it. Shutdown after the idle
     // timeout.
     template <class Comm>
-    CommandKind receive(ControlServer* server, const Comm& comm, bool& timedOut)
+    Command receive(ControlServer* server, const Comm& comm, bool& timedOut)
     {
-        int kind = static_cast<int>(CommandKind::Shutdown);
+        Command command;
         timedOut = false;
         if (server) {
-            const auto command = server->waitForCommand();
-            timedOut = !command.has_value();
-            kind = static_cast<int>(command.value_or(Command {}).kind);
+            auto received = server->waitForCommand();
+            timedOut = !received.has_value();
+            if (received) {
+                command = std::move(*received);
+            }
         }
+        int kind = static_cast<int>(command.kind);
         comm.broadcast(&kind, 1, 0);
-        return static_cast<CommandKind>(kind);
+        command.kind = static_cast<CommandKind>(kind);
+        if (command.kind == CommandKind::GetCellData) {
+            broadcastStrings(comm, command.fields);
+            int si = command.siUnits ? 1 : 0;
+            comm.broadcast(&si, 1, 0);
+            command.siUnits = si != 0;
+        }
+        return command;
     }
 
-    // Runs the command on this rank. If any rank throws, every rank marks the
-    // run as failed.
+    // Runs the command on this rank. If any rank fails, every rank marks the run
+    // as failed.
     template <class Driver, class Comm>
-    Reply executeOnAllRanks(CommandKind command,
+    Reply executeOnAllRanks(const Command& command,
                             Driver& driver,
                             const Comm& comm,
                             const Info& info,
@@ -131,6 +195,12 @@ namespace detail
         bool failed = false;
         try {
             reply = execute(command, driver, info, status, exitStatus);
+        } catch (const BadRequest& e) {
+            // Each rank checks the same request before any communication, so
+            // they agree.
+            reply = Reply {};
+            reply.code = ErrorCode::InvalidArgument;
+            reply.message = e.what();
         } catch (const std::exception& e) {
             failed = true;
             error = e.what();
@@ -189,9 +259,13 @@ startControlServer(const Options& options, const Comm& comm)
 //   double elapsedSeconds() const;
 //   bool done() const;
 //   void step();               one report step, collective
+//   StepReport lastStep() const;
 //   int finish();              final output, returns the exit status
+//   CellData cellData(fields, siUnits, selection);   collective, result on rank 0
+//   WellData wellData(names);                        result on rank 0
+//   SummaryData summary(keys, history);              result on rank 0
 //
-// Comm must provide rank(), broadcast(int*, int, int) and max(int).
+// Comm must provide rank(), broadcast(T*, int, int) and max(int).
 template <class Driver, class Comm>
 int
 runControlLoop(Driver& driver, const Comm& comm, ControlServer* server)
@@ -208,7 +282,7 @@ runControlLoop(Driver& driver, const Comm& comm, ControlServer* server)
     int exitStatus = EXIT_SUCCESS;
     for (;;) {
         bool timedOut = false;
-        const CommandKind command = detail::receive(server, comm, timedOut);
+        const Command command = detail::receive(server, comm, timedOut);
         Reply reply = detail::executeOnAllRanks(command, driver, comm, info, status, exitStatus);
         if (server) {
             server->publishStatus(status);
@@ -216,7 +290,7 @@ runControlLoop(Driver& driver, const Comm& comm, ControlServer* server)
                 server->reply(std::move(reply));
             }
         }
-        if (command == CommandKind::Shutdown) {
+        if (command.kind == CommandKind::Shutdown) {
             break;
         }
     }

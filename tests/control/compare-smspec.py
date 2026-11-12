@@ -5,46 +5,31 @@ RUNTIMEI holds the time the run started and the time the file was written,
 which differ between any two runs. Everything else must match exactly.
 """
 
+import os
 import struct
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from ecl_records import records, values  # noqa: E402
 
 # RUNTIMEI entries 3 to 14: compute start and current time, year to second.
 CLOCK_FIELDS = range(3, 15)
 
 
-def records(path):
-    """Yield (keyword, raw data) pairs from an unformatted ECLIPSE file."""
-    with open(path, "rb") as f:
-        data = f.read()
-    pos = 0
-    while pos < len(data):
-        (size,) = struct.unpack(">i", data[pos : pos + 4])
-        header = data[pos + 4 : pos + 4 + size]
-        pos += size + 8
-        name = header[:8].decode().strip()
-        (count,) = struct.unpack(">i", header[8:12])
-        kind = header[12:16].decode()
-        item = 8 if kind in ("CHAR", "DOUB") else 4
-        if kind.startswith("C0"):
-            item = int(kind[1:])
-        remaining = count * item
-        body = b""
-        while remaining > 0:
-            (size,) = struct.unpack(">i", data[pos : pos + 4])
-            body += data[pos + 4 : pos + 4 + size]
-            pos += size + 8
-            remaining -= size
+def keywords(path):
+    for name, kind, count, body in records(path):
         if name == "RUNTIMEI":
-            values = list(struct.unpack(f">{count}i", body))
+            ints = values(kind, count, body)
             for i in CLOCK_FIELDS:
-                values[i] = 0
-            body = struct.pack(f">{count}i", *values)
+                ints[i] = 0
+            body = struct.pack(f">{count}i", *ints)
         yield name, body
 
 
 def main():
-    first = list(records(sys.argv[1]))
-    second = list(records(sys.argv[2]))
+    first = list(keywords(sys.argv[1]))
+    second = list(keywords(sys.argv[2]))
     if first == second:
         return 0
     for (name_a, body_a), (name_b, body_b) in zip(first, second):
