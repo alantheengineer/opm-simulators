@@ -1,0 +1,58 @@
+name: docker-image
+
+# Builds the flow image and runs SPE1 under control in it. Runs when the
+# image files change; start it by hand to check the image after other
+# changes.
+
+on:
+  pull_request:
+    branches: [deploy]
+    paths:
+      - docker/**
+      - .dockerignore
+      - .github/workflows/docker-image.yml
+  push:
+    branches: [deploy]
+    paths:
+      - docker/**
+      - .dockerignore
+      - .github/workflows/docker-image.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+
+      # The build needs more disk than the runner has free.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          tags: opm-flow:test
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            OPM_COMMON_REPO=https://github.com/${{ github.repository_owner }}/opm-common.git
+            JOBS=3
+
+      - name: Smoke test
+        run: docker/smoke-test.sh opm-flow:test
