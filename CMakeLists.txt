@@ -1128,6 +1128,17 @@ macro(opm-simulators_targets_hook)
         ${PROJECT_SOURCE_DIR}/python/test_data/SPE1CASE1a/SPE1CASE1.DATA
         ${PROJECT_BINARY_DIR}/tests/control
     )
+    if(MPI_FOUND)
+      add_test(NAME control_matches_normal_run_2ranks
+        COMMAND
+          ${PROJECT_SOURCE_DIR}/tests/control/run-control-test.sh
+          $<TARGET_FILE:flow_blackoil>
+          $<TARGET_FILE:control_step_client>
+          ${PROJECT_SOURCE_DIR}/python/test_data/SPE1CASE1a/SPE1CASE1.DATA
+          ${PROJECT_BINARY_DIR}/tests/control_2ranks
+          2
+      )
+    endif()
   endif()
 endmacro()
 

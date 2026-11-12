@@ -4,7 +4,9 @@
 # the control interface matches the last restart file. SMSPEC is compared
 # without the wall clock times it holds.
 #
-# Usage: run-control-test.sh FLOW CLIENT DECK OUTPUT_DIR
+# Usage: run-control-test.sh FLOW CLIENT DECK OUTPUT_DIR [RANKS]
+#
+# With RANKS above 1 both runs use mpirun.
 
 set -uo pipefail
 
@@ -12,7 +14,13 @@ flow=$1
 client=$2
 deck=$3
 out=$4
+ranks=${5:-1}
 here=$(dirname "$0")
+
+launch=()
+if [ "$ranks" -gt 1 ]; then
+    launch=(mpirun -np "$ranks" --oversubscribe)
+fi
 
 fail() {
     echo "FAILED: $*"
@@ -28,11 +36,11 @@ fail() {
 rm -rf "$out"
 mkdir -p "$out/normal" "$out/control"
 
-"$flow" "$deck" --output-dir="$out/normal" > "$out/normal.log" 2>&1 \
+"${launch[@]}" "$flow" "$deck" --output-dir="$out/normal" > "$out/normal.log" 2>&1 \
     || fail "normal run exited with $?"
 
 port=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
-"$flow" "$deck" --output-dir="$out/control" --control-endpoint="127.0.0.1:$port" \
+"${launch[@]}" "$flow" "$deck" --output-dir="$out/control" --control-endpoint="127.0.0.1:$port" \
     > "$out/control.log" 2>&1 &
 pid=$!
 

@@ -24,6 +24,7 @@
 
 #include <memory>
 #include <optional>
+#include <string>
 
 namespace Opm::Control
 {
@@ -54,6 +55,17 @@ public:
     void reply(Reply reply);
 
     void publishStatus(const Status& status);
+
+    // Sends the status of a report step to the client of a running
+    // AdvanceTo.
+    void progress(const Status& status);
+
+    // Set by Cancel or Abort since the last command started.
+    bool cancelRequested() const;
+
+    // Set by Abort. The reason is empty until then.
+    bool abortRequested() const;
+    std::string abortReason() const;
 
 private:
     class Impl;

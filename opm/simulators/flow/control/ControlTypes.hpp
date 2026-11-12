@@ -37,7 +37,9 @@ enum class CommandKind : int {
     Shutdown,
     GetCellData,
     GetWellData,
-    GetSummary
+    GetSummary,
+    AdvanceTo,
+    Abort,
 };
 
 // Cells to return from GetCellData. All active cells when empty.
@@ -49,7 +51,14 @@ struct CellSelection {
     std::array<int, 6> box {};
 };
 
-// fields and siUnits are sent to every rank. The rest is used on rank 0 only.
+struct StopCondition {
+    std::string key;
+    bool above = false;
+    double value = 0.0;
+};
+
+// Only kind, fields and siUnits reach every rank. The rest is used on rank
+// 0, which sends the other ranks what they need.
 struct Command {
     CommandKind kind = CommandKind::Shutdown;
     std::vector<std::string> fields;
@@ -57,6 +66,11 @@ struct Command {
     CellSelection cells;
     std::vector<std::string> names;
     bool history = false;
+    // AdvanceTo: a report step, or a date when targetStep is negative.
+    int targetStep = -1;
+    std::string date;
+    std::vector<StopCondition> stops;
+    std::string reason;
 };
 
 // A request the simulator cannot answer, such as an unknown field. Thrown
@@ -97,6 +111,7 @@ struct Status {
     double lastStepWallSeconds = 0.0;
     StepReport lastStep;
     std::string error;
+    std::string stopReason;
 };
 
 struct CellField {

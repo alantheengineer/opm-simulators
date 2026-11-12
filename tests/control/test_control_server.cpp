@@ -28,13 +28,16 @@
 
 #include <grpcpp/grpcpp.h>
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <future>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace
@@ -97,6 +100,7 @@ struct FakeDriver {
         if (current == failAt) {
             throw std::runtime_error("Linear solver failed");
         }
+        std::this_thread::sleep_for(stepTime);
         ++current;
     }
     int finish()
@@ -169,7 +173,20 @@ struct FakeDriver {
         return data;
     }
 
+    bool hasSummaryKey(const std::string& key) const
+    {
+        return key == "FOPR";
+    }
+    std::optional<double> summaryValue(const std::string& key) const
+    {
+        if (key != "FOPR") {
+            return std::nullopt;
+        }
+        return 100.0 - 10.0 * current;
+    }
+
     std::size_t cells = 600000;
+    std::chrono::milliseconds stepTime {0};
 };
 
 Options
@@ -532,4 +549,182 @@ BOOST_AUTO_TEST_CASE(NoReadsAfterFailure)
 
     BOOST_REQUIRE(shutdown(*f.client).ok());
     BOOST_CHECK_EQUAL(f.exitStatus.get(), EXIT_FAILURE);
+}
+
+namespace
+{
+
+std::vector<pb::StatusReply>
+advance(pb::Control::Stub& client, const pb::AdvanceRequest& request, grpc::Status& status)
+{
+    grpc::ClientContext context;
+    auto reader = client.AdvanceTo(&context, request);
+    std::vector<pb::StatusReply> messages;
+    pb::StatusReply message;
+    while (reader->Read(&message)) {
+        messages.push_back(message);
+    }
+    status = reader->Finish();
+    return messages;
+}
+
+} // namespace
+
+BOOST_AUTO_TEST_CASE(AdvanceToReportStep)
+{
+    Fixture f;
+    f.driver.steps = 5;
+    pb::AdvanceRequest request;
+    request.set_report_step(3);
+    grpc::Status status;
+    const auto messages = advance(*f.client, request, status);
+    BOOST_REQUIRE(status.ok());
+    // One message per report step. The last says why it stopped.
+    BOOST_REQUIRE_EQUAL(messages.size(), 3U);
+    BOOST_CHECK_EQUAL(messages[0].report_step(), 1);
+    BOOST_CHECK(messages[0].stop_reason().empty());
+    BOOST_CHECK_EQUAL(messages[2].report_step(), 3);
+    BOOST_CHECK_EQUAL(messages[2].stop_reason(), "Reached report step 3");
+    BOOST_CHECK_EQUAL(messages[2].state(), pb::STATE_STEPPING);
+
+    // A target already reached is refused and the run carries on.
+    advance(*f.client, request, status);
+    BOOST_CHECK_EQUAL(status.error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+
+    request.set_report_step(9);
+    advance(*f.client, request, status);
+    BOOST_CHECK_EQUAL(status.error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+    BOOST_CHECK_EQUAL(status.error_message(), "The schedule has 5 report steps");
+
+    request.set_report_step(5);
+    const auto rest = advance(*f.client, request, status);
+    BOOST_REQUIRE(status.ok());
+    BOOST_CHECK_EQUAL(rest.back().state(), pb::STATE_DONE);
+
+    BOOST_REQUIRE(shutdown(*f.client).ok());
+    BOOST_CHECK_EQUAL(f.exitStatus.get(), EXIT_SUCCESS);
+}
+
+BOOST_AUTO_TEST_CASE(AdvanceToDate)
+{
+    Fixture f;
+    pb::AdvanceRequest request;
+    // The fake schedule has dates for report steps 0 and 1.
+    request.set_date("2026-01-15T00:00:00Z");
+    grpc::Status status;
+    const auto messages = advance(*f.client, request, status);
+    BOOST_REQUIRE(status.ok());
+    BOOST_CHECK_EQUAL(messages.back().report_step(), 1);
+
+    request.set_date("2030-01-01T00:00:00Z");
+    advance(*f.client, request, status);
+    BOOST_CHECK_EQUAL(status.error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+
+    request.set_date("1 January 2027");
+    advance(*f.client, request, status);
+    BOOST_CHECK_EQUAL(status.error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+
+    BOOST_REQUIRE(shutdown(*f.client).ok());
+    f.exitStatus.get();
+}
+
+BOOST_AUTO_TEST_CASE(AdvanceStopsOnCondition)
+{
+    Fixture f;
+    f.driver.steps = 10;
+    pb::AdvanceRequest request;
+    request.set_report_step(10);
+    auto& stop = *request.add_stop();
+    stop.set_key("FOPR");
+    stop.set_comparison(pb::StopCondition::COMPARISON_BELOW);
+    stop.set_value(75.0);
+    grpc::Status status;
+    const auto messages = advance(*f.client, request, status);
+    BOOST_REQUIRE(status.ok());
+    // FOPR is 100 - 10 * step, so it first drops below 75 after step 3.
+    BOOST_CHECK_EQUAL(messages.back().report_step(), 3);
+    BOOST_CHECK_EQUAL(messages.back().stop_reason(), "FOPR below 75.000000");
+
+    stop.set_key("NOSUCHKEY");
+    advance(*f.client, request, status);
+    BOOST_CHECK_EQUAL(status.error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+
+    stop.set_key("FOPR");
+    stop.set_comparison(pb::StopCondition::COMPARISON_UNSPECIFIED);
+    advance(*f.client, request, status);
+    BOOST_CHECK_EQUAL(status.error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+
+    BOOST_REQUIRE(shutdown(*f.client).ok());
+    f.exitStatus.get();
+}
+
+BOOST_AUTO_TEST_CASE(CancelStopsAnAdvance)
+{
+    Fixture f;
+    f.driver.steps = 1000;
+    f.driver.stepTime = std::chrono::milliseconds(5);
+    pb::AdvanceRequest request;
+    request.set_report_step(1000);
+    grpc::ClientContext context;
+    auto reader = f.client->AdvanceTo(&context, request);
+    pb::StatusReply message;
+    BOOST_REQUIRE(reader->Read(&message));
+
+    grpc::ClientContext cancel;
+    pb::CancelReply cancelled;
+    BOOST_REQUIRE(f.client->Cancel(&cancel, pb::CancelRequest {}, &cancelled).ok());
+
+    pb::StatusReply last;
+    while (reader->Read(&message)) {
+        last = message;
+    }
+    BOOST_REQUIRE(reader->Finish().ok());
+    BOOST_CHECK_EQUAL(last.stop_reason(), "Cancelled");
+    BOOST_CHECK_LT(last.report_step(), 1000);
+
+    // The run is still usable.
+    grpc::Status status;
+    step(*f.client, status);
+    BOOST_CHECK(status.ok());
+
+    BOOST_REQUIRE(shutdown(*f.client).ok());
+    BOOST_CHECK_EQUAL(f.exitStatus.get(), EXIT_SUCCESS);
+}
+
+BOOST_AUTO_TEST_CASE(AbortWhenIdle)
+{
+    Fixture f;
+    grpc::ClientContext context;
+    pb::AbortRequest request;
+    request.set_reason("Client restarted");
+    pb::AbortReply reply;
+    BOOST_REQUIRE(f.client->Abort(&context, request, &reply).ok());
+    BOOST_CHECK_EQUAL(f.exitStatus.get(), EXIT_FAILURE);
+    BOOST_CHECK(!f.driver.finished);
+}
+
+BOOST_AUTO_TEST_CASE(AbortDuringAdvance)
+{
+    Fixture f;
+    f.driver.steps = 1000;
+    f.driver.stepTime = std::chrono::milliseconds(5);
+    pb::AdvanceRequest request;
+    request.set_report_step(1000);
+    grpc::ClientContext context;
+    auto reader = f.client->AdvanceTo(&context, request);
+    pb::StatusReply message;
+    BOOST_REQUIRE(reader->Read(&message));
+
+    grpc::ClientContext abort;
+    pb::AbortReply aborted;
+    BOOST_REQUIRE(f.client->Abort(&abort, pb::AbortRequest {}, &aborted).ok());
+
+    pb::StatusReply last;
+    while (reader->Read(&message)) {
+        last = message;
+    }
+    reader->Finish();
+    BOOST_CHECK_EQUAL(last.stop_reason(), "Aborted");
+    BOOST_CHECK_EQUAL(f.exitStatus.get(), EXIT_FAILURE);
+    BOOST_CHECK(!f.driver.finished);
 }
