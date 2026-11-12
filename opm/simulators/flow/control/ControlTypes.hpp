@@ -40,6 +40,7 @@ enum class CommandKind : int {
     GetSummary,
     AdvanceTo,
     Abort,
+    ApplySchedule,
 };
 
 // Cells to return from GetCellData. All active cells when empty.
@@ -71,6 +72,8 @@ struct Command {
     std::string date;
     std::vector<StopCondition> stops;
     std::string reason;
+    // ApplySchedule: SCHEDULE text, sent to every rank.
+    std::string text;
 };
 
 // A request the simulator cannot answer, such as an unknown field. Thrown
@@ -160,6 +163,13 @@ struct SummaryData {
     std::vector<SummarySeries> series;
 };
 
+struct ScheduleChange {
+    std::string text;
+    std::vector<std::string> keywords;
+    int reportStep = 0;
+    std::vector<std::string> wells;
+};
+
 struct Reply {
     ErrorCode code = ErrorCode::None;
     std::string message;
@@ -168,6 +178,7 @@ struct Reply {
     CellData cellData;
     WellData wellData;
     SummaryData summary;
+    ScheduleChange schedule;
 };
 
 struct Options {

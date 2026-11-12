@@ -28,13 +28,18 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <future>
+#include <iomanip>
+#include <limits>
+#include <map>
 #include <memory>
 #include <mutex>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -205,6 +210,117 @@ namespace
                                      stop.value()});
         }
         return {};
+    }
+
+    // One deck item: the value, or 1* when it is not given.
+    std::string item(bool given, double value)
+    {
+        if (!given) {
+            return "1*";
+        }
+        std::ostringstream out;
+        out << std::setprecision(std::numeric_limits<double>::max_digits10) << value;
+        return out.str();
+    }
+
+    // Writes the WCONPROD or WCONINJE record for a WellControlRequest. Empty
+    // error if the request is well formed.
+    std::string wellControlText(const pb::WellControlRequest& request, std::string& error)
+    {
+        const auto& well = request.well();
+        if (well.empty() || well.find_first_of("'/ \t\r\n") != std::string::npos) {
+            error = "A well name is needed, without quotes, slashes or spaces";
+            return {};
+        }
+        const std::string status = request.status().empty() ? "OPEN" : request.status();
+        if (status != "OPEN" && status != "STOP" && status != "SHUT") {
+            error = "Status must be OPEN, STOP or SHUT";
+            return {};
+        }
+        for (const double value : {request.oil_rate(),
+                                   request.water_rate(),
+                                   request.gas_rate(),
+                                   request.liquid_rate(),
+                                   request.reservoir_rate(),
+                                   request.bhp(),
+                                   request.thp(),
+                                   request.surface_rate()}) {
+            if (!std::isfinite(value)) {
+                error = "Targets and limits must be finite";
+                return {};
+            }
+        }
+
+        const auto& control = request.control();
+        std::ostringstream text;
+        if (request.injector_type().empty()) {
+            const std::map<std::string, bool> targets {
+                {"ORAT", request.has_oil_rate()},
+                {"WRAT", request.has_water_rate()},
+                {"GRAT", request.has_gas_rate()},
+                {"LRAT", request.has_liquid_rate()},
+                {"RESV", request.has_reservoir_rate()},
+                {"BHP", request.has_bhp()},
+                {"THP", request.has_thp()},
+            };
+            const auto target = targets.find(control);
+            if (target == targets.end()) {
+                error = "Producer control must be ORAT, WRAT, GRAT, LRAT, RESV, BHP or THP";
+                return {};
+            }
+            if (!target->second) {
+                error = "Control " + control + " needs its target";
+                return {};
+            }
+            text << "WCONPROD\n '" << well << "' '" << status << "' '" << control << "' "
+                 << item(request.has_oil_rate(), request.oil_rate()) << ' '
+                 << item(request.has_water_rate(), request.water_rate()) << ' '
+                 << item(request.has_gas_rate(), request.gas_rate()) << ' '
+                 << item(request.has_liquid_rate(), request.liquid_rate()) << ' '
+                 << item(request.has_reservoir_rate(), request.reservoir_rate()) << ' '
+                 << item(request.has_bhp(), request.bhp()) << ' '
+                 << item(request.has_thp(), request.thp()) << " /\n/\n";
+            return text.str();
+        }
+
+        const auto& type = request.injector_type();
+        if (type != "WATER" && type != "GAS" && type != "OIL") {
+            error = "Injector type must be WATER, GAS or OIL";
+            return {};
+        }
+        const std::map<std::string, bool> targets {
+            {"RATE", request.has_surface_rate()},
+            {"RESV", request.has_reservoir_rate()},
+            {"BHP", request.has_bhp()},
+            {"THP", request.has_thp()},
+        };
+        const auto target = targets.find(control);
+        if (target == targets.end()) {
+            error = "Injector control must be RATE, RESV, BHP or THP";
+            return {};
+        }
+        if (!target->second) {
+            error = "Control " + control + " needs its target";
+            return {};
+        }
+        text << "WCONINJE\n '" << well << "' '" << type << "' '" << status << "' '" << control
+             << "' " << item(request.has_surface_rate(), request.surface_rate()) << ' '
+             << item(request.has_reservoir_rate(), request.reservoir_rate()) << ' '
+             << item(request.has_bhp(), request.bhp()) << ' '
+             << item(request.has_thp(), request.thp()) << " /\n/\n";
+        return text.str();
+    }
+
+    void fill(const ScheduleChange& change, pb::ApplyScheduleReply& out)
+    {
+        out.set_text(change.text);
+        for (const auto& keyword : change.keywords) {
+            out.add_keywords(keyword);
+        }
+        out.set_report_step(change.reportStep);
+        for (const auto& well : change.wells) {
+            out.add_wells(well);
+        }
     }
 
     // Sends each field in chunks. False if the client went away.
@@ -474,6 +590,25 @@ public:
         return toGrpc(submit(context, CommandKind::Shutdown));
     }
 
+    grpc::Status ApplySchedule(grpc::ServerContext* context,
+                               const pb::ApplyScheduleRequest* request,
+                               pb::ApplyScheduleReply* out) override
+    {
+        return applySchedule(*context, request->text(), *out);
+    }
+
+    grpc::Status SetWellControl(grpc::ServerContext* context,
+                                const pb::WellControlRequest* request,
+                                pb::ApplyScheduleReply* out) override
+    {
+        std::string error;
+        const std::string text = wellControlText(*request, error);
+        if (!error.empty()) {
+            return {grpc::StatusCode::INVALID_ARGUMENT, error};
+        }
+        return applySchedule(*context, text, *out);
+    }
+
     grpc::Status GetCellData(grpc::ServerContext* context,
                              const pb::CellDataRequest* request,
                              grpc::ServerWriter<pb::CellDataChunk>* writer) override
@@ -564,6 +699,21 @@ private:
         }
         cv_.notify_one();
         return std::nullopt;
+    }
+
+    grpc::Status applySchedule(const grpc::ServerContext& context,
+                               const std::string& text,
+                               pb::ApplyScheduleReply& out)
+    {
+        if (text.find_first_not_of(" \t\r\n") == std::string::npos) {
+            return {grpc::StatusCode::INVALID_ARGUMENT, "No keywords given"};
+        }
+        Command command;
+        command.kind = CommandKind::ApplySchedule;
+        command.text = text;
+        const Reply reply = submit(&context, std::move(command));
+        fill(reply.schedule, out);
+        return toGrpc(reply);
     }
 
     Reply submit(const grpc::ServerContext* context, CommandKind kind)

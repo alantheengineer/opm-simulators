@@ -35,6 +35,15 @@ service Control {
   rpc GetCellData(CellDataRequest) returns (stream CellDataChunk);
   rpc GetWellData(WellDataRequest) returns (WellDataReply);
   rpc GetSummary(SummaryRequest) returns (SummaryReply);
+
+  // Applies SCHEDULE section keywords from the next report step on, as if
+  // they were written in the deck at that date. Only keywords on the
+  // control allow-list are accepted. Nothing is applied if any keyword is
+  // refused.
+  rpc ApplySchedule(ApplyScheduleRequest) returns (ApplyScheduleReply);
+  // Sets the controls of one well by writing a WCONPROD or WCONINJE record
+  // for it. Applied as ApplySchedule.
+  rpc SetWellControl(WellControlRequest) returns (ApplyScheduleReply);
 }
 
 message GetInfoRequest {}
@@ -223,4 +232,44 @@ message SummaryReply {
   // seconds.
   repeated double elapsed_seconds = 2;
   repeated SummarySeries series = 3;
+}
+
+message ApplyScheduleRequest {
+  // Keywords in deck units, for example
+  // "WCONPROD\n 'PROD' 'OPEN' 'ORAT' 15000 4* 1000 /\n/\n".
+  string text = 1;
+}
+
+message ApplyScheduleReply {
+  // The text applied. For SetWellControl, the record that was written.
+  string text = 1;
+  // Keywords applied, in order.
+  repeated string keywords = 2;
+  // First report step the change applies to: the next one to run.
+  int32 report_step = 3;
+  // Wells the change affects.
+  repeated string wells = 4;
+}
+
+// A WCONPROD record for a producer, or a WCONINJE record when
+// injector_type is set. Values are in deck units. As in those keywords,
+// a value left out has no limit, so give every limit the well should keep.
+message WellControlRequest {
+  string well = 1;
+  // OPEN, STOP or SHUT. OPEN when empty.
+  string status = 2;
+  // Producer: ORAT, WRAT, GRAT, LRAT, RESV, BHP or THP.
+  // Injector: RATE, RESV, BHP or THP.
+  string control = 3;
+  // WATER, GAS or OIL for an injector. Empty for a producer.
+  string injector_type = 4;
+  optional double oil_rate = 5;
+  optional double water_rate = 6;
+  optional double gas_rate = 7;
+  optional double liquid_rate = 8;
+  optional double reservoir_rate = 9;
+  optional double bhp = 10;
+  optional double thp = 11;
+  // Injector surface rate.
+  optional double surface_rate = 12;
 }

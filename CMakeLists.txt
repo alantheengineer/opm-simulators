@@ -1128,6 +1128,14 @@ macro(opm-simulators_targets_hook)
         ${PROJECT_SOURCE_DIR}/python/test_data/SPE1CASE1a/SPE1CASE1.DATA
         ${PROJECT_BINARY_DIR}/tests/control
     )
+    add_test(NAME control_schedule_matches_deck
+      COMMAND
+        ${PROJECT_SOURCE_DIR}/tests/control/run-schedule-test.sh
+        $<TARGET_FILE:flow_blackoil>
+        $<TARGET_FILE:control_step_client>
+        ${PROJECT_SOURCE_DIR}/python/test_data/SPE1CASE1a/SPE1CASE1.DATA
+        ${PROJECT_BINARY_DIR}/tests/control_schedule
+    )
     add_test(NAME control_idle_timeout_finishes
       COMMAND
         ${PROJECT_SOURCE_DIR}/tests/control/run-idle-test.sh
@@ -1143,6 +1151,15 @@ macro(opm-simulators_targets_hook)
           $<TARGET_FILE:control_step_client>
           ${PROJECT_SOURCE_DIR}/python/test_data/SPE1CASE1a/SPE1CASE1.DATA
           ${PROJECT_BINARY_DIR}/tests/control_2ranks
+          2
+      )
+      add_test(NAME control_schedule_matches_deck_2ranks
+        COMMAND
+          ${PROJECT_SOURCE_DIR}/tests/control/run-schedule-test.sh
+          $<TARGET_FILE:flow_blackoil>
+          $<TARGET_FILE:control_step_client>
+          ${PROJECT_SOURCE_DIR}/python/test_data/SPE1CASE1a/SPE1CASE1.DATA
+          ${PROJECT_BINARY_DIR}/tests/control_schedule_2ranks
           2
       )
     endif()

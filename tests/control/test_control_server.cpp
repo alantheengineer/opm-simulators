@@ -33,6 +33,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <future>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -185,6 +186,21 @@ struct FakeDriver {
         return 100.0 - 10.0 * current;
     }
 
+    ScheduleChange applySchedule(const std::string& text)
+    {
+        if (text.find("NOSUCHWELL") != std::string::npos) {
+            throw BadRequest("No well NOSUCHWELL");
+        }
+        appliedText = text;
+        ScheduleChange change;
+        change.text = text;
+        change.keywords = {text.substr(0, text.find('\n'))};
+        change.reportStep = current;
+        change.wells = {"PROD"};
+        return change;
+    }
+
+    std::string appliedText;
     std::size_t cells = 600000;
     std::chrono::milliseconds stepTime {0};
 };
@@ -727,4 +743,109 @@ BOOST_AUTO_TEST_CASE(AbortDuringAdvance)
     BOOST_CHECK_EQUAL(last.stop_reason(), "Aborted");
     BOOST_CHECK_EQUAL(f.exitStatus.get(), EXIT_FAILURE);
     BOOST_CHECK(!f.driver.finished);
+}
+
+namespace
+{
+
+grpc::Status
+setWellControl(pb::Control::Stub& client,
+               const pb::WellControlRequest& request,
+               pb::ApplyScheduleReply& reply)
+{
+    grpc::ClientContext context;
+    return client.SetWellControl(&context, request, &reply);
+}
+
+} // namespace
+
+BOOST_AUTO_TEST_CASE(ApplyScheduleAtNextStep)
+{
+    Fixture f;
+    grpc::Status status;
+    step(*f.client, status);
+    step(*f.client, status);
+
+    pb::ApplyScheduleRequest request;
+    request.set_text("WELOPEN\n 'PROD' 'SHUT' /\n/\n");
+    pb::ApplyScheduleReply reply;
+    grpc::ClientContext context;
+    BOOST_REQUIRE(f.client->ApplySchedule(&context, request, &reply).ok());
+    BOOST_CHECK_EQUAL(reply.report_step(), 2);
+    BOOST_CHECK_EQUAL(reply.keywords(0), "WELOPEN");
+    BOOST_CHECK_EQUAL(reply.wells(0), "PROD");
+
+    request.set_text("WELOPEN\n 'NOSUCHWELL' 'SHUT' /\n/\n");
+    grpc::ClientContext refused;
+    BOOST_CHECK_EQUAL(f.client->ApplySchedule(&refused, request, &reply).error_code(),
+                      grpc::StatusCode::INVALID_ARGUMENT);
+
+    request.set_text("  \n");
+    grpc::ClientContext empty;
+    BOOST_CHECK_EQUAL(f.client->ApplySchedule(&empty, request, &reply).error_code(),
+                      grpc::StatusCode::INVALID_ARGUMENT);
+
+    // No change once the schedule has ended.
+    step(*f.client, status);
+    BOOST_REQUIRE_EQUAL(f.driver.current, 3);
+    request.set_text("WELOPEN\n 'PROD' 'OPEN' /\n/\n");
+    grpc::ClientContext late;
+    BOOST_CHECK_EQUAL(f.client->ApplySchedule(&late, request, &reply).error_code(),
+                      grpc::StatusCode::FAILED_PRECONDITION);
+
+    BOOST_REQUIRE(shutdown(*f.client).ok());
+    BOOST_CHECK_EQUAL(f.exitStatus.get(), EXIT_SUCCESS);
+}
+
+BOOST_AUTO_TEST_CASE(SetWellControlWritesRecords)
+{
+    Fixture f;
+    pb::ApplyScheduleReply reply;
+
+    pb::WellControlRequest producer;
+    producer.set_well("PROD");
+    producer.set_control("ORAT");
+    producer.set_oil_rate(15000);
+    producer.set_bhp(1000.5);
+    BOOST_REQUIRE(setWellControl(*f.client, producer, reply).ok());
+    BOOST_CHECK_EQUAL(reply.text(),
+                      "WCONPROD\n 'PROD' 'OPEN' 'ORAT' 15000 1* 1* 1* 1* 1000.5 1* /\n/\n");
+    BOOST_CHECK_EQUAL(f.driver.appliedText, reply.text());
+
+    pb::WellControlRequest injector;
+    injector.set_well("INJ");
+    injector.set_injector_type("GAS");
+    injector.set_status("SHUT");
+    injector.set_control("RATE");
+    injector.set_surface_rate(80000);
+    injector.set_bhp(9014);
+    BOOST_REQUIRE(setWellControl(*f.client, injector, reply).ok());
+    BOOST_CHECK_EQUAL(reply.text(), "WCONINJE\n 'INJ' 'GAS' 'SHUT' 'RATE' 80000 1* 9014 1* /\n/\n");
+
+    // The control mode needs its target.
+    producer.clear_oil_rate();
+    BOOST_CHECK_EQUAL(setWellControl(*f.client, producer, reply).error_code(),
+                      grpc::StatusCode::INVALID_ARGUMENT);
+
+    producer.set_oil_rate(15000);
+    producer.set_control("RATE");
+    BOOST_CHECK_EQUAL(setWellControl(*f.client, producer, reply).error_code(),
+                      grpc::StatusCode::INVALID_ARGUMENT);
+
+    producer.set_control("ORAT");
+    producer.set_well("P'1");
+    BOOST_CHECK_EQUAL(setWellControl(*f.client, producer, reply).error_code(),
+                      grpc::StatusCode::INVALID_ARGUMENT);
+
+    producer.set_well("PROD");
+    producer.set_oil_rate(std::numeric_limits<double>::infinity());
+    BOOST_CHECK_EQUAL(setWellControl(*f.client, producer, reply).error_code(),
+                      grpc::StatusCode::INVALID_ARGUMENT);
+
+    injector.set_injector_type("STEAM");
+    BOOST_CHECK_EQUAL(setWellControl(*f.client, injector, reply).error_code(),
+                      grpc::StatusCode::INVALID_ARGUMENT);
+
+    BOOST_REQUIRE(shutdown(*f.client).ok());
+    f.exitStatus.get();
 }
