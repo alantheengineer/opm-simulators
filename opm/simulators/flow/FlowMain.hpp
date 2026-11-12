@@ -193,7 +193,10 @@ namespace Opm {
 
             if (status == 0) {
                 // Fail before the deck is read if the control settings are wrong.
-                Control::controlOptions(mpiRank == 0);
+                const auto control = Control::controlOptions(mpiRank == 0);
+                if (!control.endpoint.empty() && !Control::controlSupported<TypeTag>) {
+                    throw std::runtime_error("Step control is not available for this model");
+                }
             }
 
             // set the maximum limit on OMP threads
@@ -413,7 +416,11 @@ namespace Opm {
         {
             controlOptions_ = Control::controlOptions(mpi_rank_ == 0);
             if (!controlOptions_.endpoint.empty()) {
-                return runSimulatorInitOrRun_(&FlowMain::runSimulatorControlCallback_);
+                if constexpr (Control::controlSupported<TypeTag>) {
+                    return runSimulatorInitOrRun_(&FlowMain::runSimulatorControlCallback_);
+                } else {
+                    throw std::runtime_error("Step control is not available for this model");
+                }
             }
             return runSimulatorInitOrRun_(&FlowMain::runSimulatorRunCallback_);
         }
@@ -454,7 +461,7 @@ namespace Opm {
             const auto& comm = FlowGenericVanguard::comm();
             const auto server = Control::startControlServer(controlOptions_, comm);
             runSimulatorInitCallback_();
-            Control::FlowControlDriver driver(*this);
+            Control::FlowControlDriver<TypeTag> driver(*this);
             return Control::runControlLoop(driver, comm, server.get());
         }
 

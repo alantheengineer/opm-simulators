@@ -1,7 +1,8 @@
 #!/bin/bash
 # Runs a deck normally and under step control, then checks that every output
-# file apart from the logs is identical. SMSPEC is compared without the wall
-# clock times it holds.
+# file apart from the logs is identical, and that the pressure read through
+# the control interface matches the last restart file. SMSPEC is compared
+# without the wall clock times it holds.
 #
 # Usage: run-control-test.sh FLOW CLIENT DECK OUTPUT_DIR
 
@@ -35,7 +36,7 @@ port=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0));
     > "$out/control.log" 2>&1 &
 pid=$!
 
-if ! "$client" "127.0.0.1:$port"; then
+if ! "$client" "127.0.0.1:$port" --pressure-file="$out/pressure.txt"; then
     kill "$pid" 2> /dev/null
     fail "client failed"
 fi
@@ -57,3 +58,6 @@ for file in "$out"/normal/*; do
 done
 [ "$compared" -gt 0 ] || fail "normal run wrote no output files"
 echo "$compared output files identical"
+
+"$here/check-pressure.py" "$out/control" "$(basename "$deck" .DATA)" "$out/pressure.txt" \
+    || fail "pressure read through control does not match the restart file"

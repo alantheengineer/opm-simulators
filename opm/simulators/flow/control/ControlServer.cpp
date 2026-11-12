@@ -25,8 +25,11 @@
 
 #include <grpcpp/grpcpp.h>
 
+#include <algorithm>
 #include <chrono>
 #include <condition_variable>
+#include <cstddef>
+#include <cstdint>
 #include <future>
 #include <mutex>
 #include <stdexcept>
@@ -42,10 +45,22 @@ namespace
 
     namespace pb = opm::control::v1;
 
+    // Values per chunk. 2 MB keeps each message under the 4 MB default receive
+    // limit of gRPC clients.
+    constexpr std::size_t chunkValues = 262144;
+
     bool isLoopback(std::string_view endpoint)
     {
         return endpoint.starts_with("127.0.0.1:") || endpoint.starts_with("localhost:")
             || endpoint.starts_with("[::1]:");
+    }
+
+    Reply failure(ErrorCode code, std::string message)
+    {
+        Reply reply;
+        reply.code = code;
+        reply.message = std::move(message);
+        return reply;
     }
 
     grpc::Status toGrpc(const Reply& reply)
@@ -92,6 +107,12 @@ namespace
         out.set_elapsed_seconds(status.elapsedSeconds);
         out.set_last_step_wall_seconds(status.lastStepWallSeconds);
         out.set_error(status.error);
+        auto& step = *out.mutable_last_step();
+        step.set_time_steps(status.lastStep.timeSteps);
+        step.set_cuts(status.lastStep.cuts);
+        step.set_newton_iterations(status.lastStep.newtonIterations);
+        step.set_linear_iterations(status.lastStep.linearIterations);
+        step.set_wasted_newton_iterations(status.lastStep.wastedNewtonIterations);
     }
 
     void fill(const Info& info, pb::InfoReply& out)
@@ -99,14 +120,93 @@ namespace
         out.set_engine_version(info.engineVersion);
         out.set_ranks(info.ranks);
         out.set_threads_per_rank(info.threadsPerRank);
-        for (const int dim : info.gridDims) {
-            out.add_grid_dims(dim);
-        }
+        out.mutable_grid_dims()->Add(info.gridDims.begin(), info.gridDims.end());
         out.set_active_cells(info.activeCells);
         for (const auto& date : info.reportDates) {
             out.add_report_dates(date);
         }
         out.set_unit_system(info.unitSystem);
+    }
+
+    void fill(const WellData& data, pb::WellDataReply& out)
+    {
+        for (const auto& well : data.wells) {
+            auto& w = *out.add_wells();
+            w.set_name(well.name);
+            w.set_status(well.status);
+            w.set_injector(well.injector);
+            w.set_control(well.control);
+            w.set_oil_rate(well.oilRate);
+            w.set_water_rate(well.waterRate);
+            w.set_gas_rate(well.gasRate);
+            w.set_bhp(well.bhp);
+            w.set_thp(well.thp);
+            w.set_temperature(well.temperature);
+            w.set_salt_rate(well.saltRate);
+        }
+        out.set_liquid_rate_unit(data.liquidRateUnit);
+        out.set_gas_rate_unit(data.gasRateUnit);
+        out.set_pressure_unit(data.pressureUnit);
+        out.set_temperature_unit(data.temperatureUnit);
+        out.set_salt_rate_unit(data.saltRateUnit);
+    }
+
+    void fill(const SummaryData& data, pb::SummaryReply& out)
+    {
+        out.mutable_report_steps()->Add(data.reportSteps.begin(), data.reportSteps.end());
+        out.mutable_elapsed_seconds()->Add(data.elapsedSeconds.begin(), data.elapsedSeconds.end());
+        for (const auto& series : data.series) {
+            auto& s = *out.add_series();
+            s.set_key(series.key);
+            s.mutable_values()->Add(series.values.begin(), series.values.end());
+        }
+    }
+
+    Command toCommand(const pb::CellDataRequest& request)
+    {
+        Command command;
+        command.kind = CommandKind::GetCellData;
+        command.fields.assign(request.fields().begin(), request.fields().end());
+        command.siUnits = request.si_units();
+        if (request.has_indices()) {
+            command.cells.mode = CellSelection::Mode::Indices;
+            command.cells.indices.assign(request.indices().active().begin(),
+                                         request.indices().active().end());
+        } else if (request.has_box()) {
+            const auto& box = request.box();
+            command.cells.mode = CellSelection::Mode::Box;
+            command.cells.box = {box.i1(), box.i2(), box.j1(), box.j2(), box.k1(), box.k2()};
+        }
+        return command;
+    }
+
+    // Sends each field in chunks. False if the client went away.
+    bool writeChunks(const CellData& data, grpc::ServerWriter<pb::CellDataChunk>& writer)
+    {
+        bool first = true;
+        for (const auto& field : data.fields) {
+            const std::size_t total = field.values.size();
+            std::size_t offset = 0;
+            do {
+                const std::size_t count = std::min(chunkValues, total - offset);
+                const auto begin = field.values.begin() + static_cast<std::ptrdiff_t>(offset);
+                pb::CellDataChunk chunk;
+                chunk.set_field(field.name);
+                chunk.set_unit(field.unit);
+                chunk.set_offset(static_cast<std::int64_t>(offset));
+                chunk.set_total(static_cast<std::int64_t>(total));
+                chunk.mutable_values()->Add(begin, begin + static_cast<std::ptrdiff_t>(count));
+                if (first) {
+                    chunk.mutable_cells()->Add(data.cells.begin(), data.cells.end());
+                    first = false;
+                }
+                if (!writer.Write(chunk)) {
+                    return false;
+                }
+                offset += count;
+            } while (offset < total);
+        }
+        return true;
     }
 
 } // namespace
@@ -145,7 +245,7 @@ public:
         {
             std::lock_guard lock(mutex_);
             closed_ = true;
-            const Reply ended {ErrorCode::InvalidState, "Simulation has ended", {}, {}};
+            const Reply ended = failure(ErrorCode::InvalidState, "Simulation has ended");
             if (pending_) {
                 pending_->promise.set_value(ended);
                 pending_.reset();
@@ -174,7 +274,7 @@ public:
         if (!cv_.wait_for(lock, idleTimeout_, [this] { return pending_.has_value(); })) {
             return std::nullopt;
         }
-        const Command command = pending_->command;
+        Command command = std::move(pending_->command);
         current_ = std::move(pending_->promise);
         pending_.reset();
         return command;
@@ -240,6 +340,48 @@ public:
         return toGrpc(submit(context, CommandKind::Shutdown));
     }
 
+    grpc::Status GetCellData(grpc::ServerContext* context,
+                             const pb::CellDataRequest* request,
+                             grpc::ServerWriter<pb::CellDataChunk>* writer) override
+    {
+        if (request->fields().empty()) {
+            return {grpc::StatusCode::INVALID_ARGUMENT, "No fields requested"};
+        }
+        const Reply reply = submit(context, toCommand(*request));
+        if (reply.code != ErrorCode::None) {
+            return toGrpc(reply);
+        }
+        if (!writeChunks(reply.cellData, *writer)) {
+            return {grpc::StatusCode::CANCELLED, "Client closed the stream"};
+        }
+        return grpc::Status::OK;
+    }
+
+    grpc::Status GetWellData(grpc::ServerContext* context,
+                             const pb::WellDataRequest* request,
+                             pb::WellDataReply* out) override
+    {
+        Command command;
+        command.kind = CommandKind::GetWellData;
+        command.names.assign(request->wells().begin(), request->wells().end());
+        const Reply reply = submit(context, std::move(command));
+        fill(reply.wellData, *out);
+        return toGrpc(reply);
+    }
+
+    grpc::Status GetSummary(grpc::ServerContext* context,
+                            const pb::SummaryRequest* request,
+                            pb::SummaryReply* out) override
+    {
+        Command command;
+        command.kind = CommandKind::GetSummary;
+        command.names.assign(request->keys().begin(), request->keys().end());
+        command.history = request->history();
+        const Reply reply = submit(context, std::move(command));
+        fill(reply.summary, *out);
+        return toGrpc(reply);
+    }
+
 private:
     struct Pending {
         Command command;
@@ -257,22 +399,29 @@ private:
             && std::string_view(it->second.data(), it->second.size()) == "Bearer " + token_;
     }
 
-    // Hands the command to the simulator thread and waits for its reply.
     Reply submit(const grpc::ServerContext* context, CommandKind kind)
     {
+        Command command;
+        command.kind = kind;
+        return submit(context, std::move(command));
+    }
+
+    // Hands the command to the simulator thread and waits for its reply.
+    Reply submit(const grpc::ServerContext* context, Command command)
+    {
         if (!authorised(*context)) {
-            return {ErrorCode::Unauthenticated, "Missing or wrong token", {}, {}};
+            return failure(ErrorCode::Unauthenticated, "Missing or wrong token");
         }
         std::future<Reply> future;
         {
             std::lock_guard lock(mutex_);
             if (closed_) {
-                return {ErrorCode::InvalidState, "Simulation has ended", {}, {}};
+                return failure(ErrorCode::InvalidState, "Simulation has ended");
             }
             if (pending_ || current_) {
-                return {ErrorCode::Busy, "Another command is in progress", {}, {}};
+                return failure(ErrorCode::Busy, "Another command is in progress");
             }
-            pending_.emplace(Pending {Command {kind}, {}});
+            pending_.emplace(Pending {std::move(command), {}});
             future = pending_->promise.get_future();
         }
         cv_.notify_one();

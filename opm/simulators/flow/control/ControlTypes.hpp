@@ -23,17 +23,48 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
 namespace Opm::Control
 {
 
-enum class CommandKind : int { GetInfo, Step, Finish, Shutdown };
+enum class CommandKind : int {
+    GetInfo,
+    Step,
+    Finish,
+    Shutdown,
+    GetCellData,
+    GetWellData,
+    GetSummary
+};
 
-// Sent from rank 0 to every rank. Commands carry no arguments yet.
+// Cells to return from GetCellData. All active cells when empty.
+struct CellSelection {
+    enum class Mode : int { All, Indices, Box };
+    Mode mode = Mode::All;
+    std::vector<std::int64_t> indices;
+    // 1-based inclusive i1, i2, j1, j2, k1, k2.
+    std::array<int, 6> box {};
+};
+
+// fields and siUnits are sent to every rank. The rest is used on rank 0 only.
 struct Command {
     CommandKind kind = CommandKind::Shutdown;
+    std::vector<std::string> fields;
+    bool siUnits = false;
+    CellSelection cells;
+    std::vector<std::string> names;
+    bool history = false;
+};
+
+// A request the simulator cannot answer, such as an unknown field. Thrown
+// before any communication and leaves the simulation untouched.
+class BadRequest : public std::runtime_error
+{
+public:
+    using std::runtime_error::runtime_error;
 };
 
 enum class State : int { Ready, Stepping, Done, Finished, Failed };
@@ -50,13 +81,68 @@ struct Info {
     std::string unitSystem;
 };
 
+struct StepReport {
+    int timeSteps = 0;
+    int cuts = 0;
+    int newtonIterations = 0;
+    int linearIterations = 0;
+    int wastedNewtonIterations = 0;
+};
+
 struct Status {
     State state = State::Ready;
     int reportStep = 0;
     int reportStepsTotal = 0;
     double elapsedSeconds = 0.0;
     double lastStepWallSeconds = 0.0;
+    StepReport lastStep;
     std::string error;
+};
+
+struct CellField {
+    std::string name;
+    std::string unit;
+    std::vector<double> values;
+};
+
+struct CellData {
+    std::vector<CellField> fields;
+    // Active indices of the selected cells, set for a box selection.
+    std::vector<std::int64_t> cells;
+};
+
+struct WellValues {
+    std::string name;
+    std::string status;
+    bool injector = false;
+    std::string control;
+    double oilRate = 0.0;
+    double waterRate = 0.0;
+    double gasRate = 0.0;
+    double bhp = 0.0;
+    double thp = 0.0;
+    double temperature = 0.0;
+    double saltRate = 0.0;
+};
+
+struct WellData {
+    std::vector<WellValues> wells;
+    std::string liquidRateUnit;
+    std::string gasRateUnit;
+    std::string pressureUnit;
+    std::string temperatureUnit;
+    std::string saltRateUnit;
+};
+
+struct SummarySeries {
+    std::string key;
+    std::vector<double> values;
+};
+
+struct SummaryData {
+    std::vector<int> reportSteps;
+    std::vector<double> elapsedSeconds;
+    std::vector<SummarySeries> series;
 };
 
 struct Reply {
@@ -64,6 +150,9 @@ struct Reply {
     std::string message;
     Info info;
     Status status;
+    CellData cellData;
+    WellData wellData;
+    SummaryData summary;
 };
 
 struct Options {

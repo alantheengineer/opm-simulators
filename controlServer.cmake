@@ -8,10 +8,8 @@ add_library(opmcontrol STATIC
   opm/simulators/flow/control/opm_control.proto
   opm/simulators/flow/control/ControlServer.cpp
 )
-set_target_properties(opmcontrol PROPERTIES
-  CXX_STANDARD 20
-  POSITION_INDEPENDENT_CODE ON
-)
+set_target_properties(opmcontrol PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_compile_features(opmcontrol PUBLIC cxx_std_20)
 target_include_directories(opmcontrol PUBLIC
   $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}>
   $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}>

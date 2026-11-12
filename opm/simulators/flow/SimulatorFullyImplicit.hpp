@@ -273,6 +273,12 @@ public:
      */
     bool runStep(SimulatorTimer& timer);
 
+    /// Totals for the run so far.
+    const SimulatorReport& report() const
+    {
+        return report_;
+    }
+
     /** \brief Install a callback that restores simulation state at the start of
      *         each report step, from a store the caller owns.
      *
