@@ -1128,6 +1128,13 @@ macro(opm-simulators_targets_hook)
         ${PROJECT_SOURCE_DIR}/python/test_data/SPE1CASE1a/SPE1CASE1.DATA
         ${PROJECT_BINARY_DIR}/tests/control
     )
+    add_test(NAME control_idle_timeout_finishes
+      COMMAND
+        ${PROJECT_SOURCE_DIR}/tests/control/run-idle-test.sh
+        $<TARGET_FILE:flow_blackoil>
+        ${PROJECT_SOURCE_DIR}/python/test_data/SPE1CASE1a/SPE1CASE1.DATA
+        ${PROJECT_BINARY_DIR}/tests/control_idle
+    )
     if(MPI_FOUND)
       add_test(NAME control_matches_normal_run_2ranks
         COMMAND
