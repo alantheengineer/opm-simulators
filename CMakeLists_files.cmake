@@ -301,6 +301,11 @@ if (HAVE_AVX2_EXTENSION)
     ${AVX2_SOURCE_FILES})
 endif()
 
+list (APPEND MAIN_SOURCE_FILES opm/simulators/flow/control/ControlParameters.cpp)
+if (NOT OPM_ENABLE_CONTROL_SERVER)
+  list (APPEND MAIN_SOURCE_FILES opm/simulators/flow/control/ControlServerDisabled.cpp)
+endif()
+
 if (Damaris_FOUND AND MPI_FOUND AND USE_DAMARIS_LIB)
   list (APPEND MAIN_SOURCE_FILES
     opm/simulators/flow/DamarisParameters.cpp
@@ -1098,6 +1103,11 @@ list (APPEND PUBLIC_HEADER_FILES
   opm/simulators/flow/CollectDataOnIORank_impl.hpp
   opm/simulators/flow/CompositionalContainer.hpp
   opm/simulators/flow/ConvergenceOutputConfiguration.hpp
+  opm/simulators/flow/control/ControlLoop.hpp
+  opm/simulators/flow/control/ControlParameters.hpp
+  opm/simulators/flow/control/ControlServer.hpp
+  opm/simulators/flow/control/ControlTypes.hpp
+  opm/simulators/flow/control/FlowControlDriver.hpp
   opm/simulators/flow/countGlobalCells.hpp
   opm/simulators/flow/CpGridVanguard.hpp
   opm/simulators/flow/DummyGradientCalculator.hpp

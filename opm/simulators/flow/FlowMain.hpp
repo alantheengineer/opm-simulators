@@ -34,6 +34,9 @@
 #include <opm/simulators/flow/FlowUtils.hpp>
 #include <opm/simulators/flow/NlddReporting.hpp>
 #include <opm/simulators/flow/SimulatorFullyImplicit.hpp>
+#include <opm/simulators/flow/control/ControlLoop.hpp>
+#include <opm/simulators/flow/control/ControlParameters.hpp>
+#include <opm/simulators/flow/control/FlowControlDriver.hpp>
 #include <opm/simulators/flow/rescoup/ReservoirCouplingEnabled.hpp>
 
 #if HAVE_DUNE_FEM
@@ -126,6 +129,7 @@ namespace Opm {
             Parameters::Register<Parameters::EndStep>
                 ("Stop the simulation after this report step. "
                  "A negative value runs to the end of the schedule");
+            Control::registerControlParameters();
 
             // register the base parameters
             registerAllParameters_<TypeTag>(/*finalizeRegistration=*/false);
@@ -185,6 +189,11 @@ namespace Opm {
                     }
                     return -1;
                 }
+            }
+
+            if (status == 0) {
+                // Fail before the deck is read if the control settings are wrong.
+                Control::controlOptions(mpiRank == 0);
             }
 
             // set the maximum limit on OMP threads
@@ -402,6 +411,10 @@ namespace Opm {
         // Run the simulator.
         int runSimulator()
         {
+            controlOptions_ = Control::controlOptions(mpi_rank_ == 0);
+            if (!controlOptions_.endpoint.empty()) {
+                return runSimulatorInitOrRun_(&FlowMain::runSimulatorControlCallback_);
+            }
             return runSimulatorInitOrRun_(&FlowMain::runSimulatorRunCallback_);
         }
 
@@ -432,6 +445,17 @@ namespace Opm {
             simulator_->init(*simtimer_);
 #endif
             return EXIT_SUCCESS;
+        }
+
+        // Callback that will be called from runSimulatorInitOrRun_().
+        // Steps the schedule on request from a control client.
+        int runSimulatorControlCallback_()
+        {
+            const auto& comm = FlowGenericVanguard::comm();
+            const auto server = Control::startControlServer(controlOptions_, comm);
+            runSimulatorInitCallback_();
+            Control::FlowControlDriver driver(*this);
+            return Control::runControlLoop(driver, comm, server.get());
         }
 
         // Output summary after simulation has completed
@@ -537,6 +561,7 @@ namespace Opm {
         std::unique_ptr<ModelSimulator> modelSimulator_;
         int  mpi_rank_ = 0;
         int  mpi_size_ = 1;
+        Control::Options controlOptions_;
         std::any parallel_information_;
         std::unique_ptr<Simulator> simulator_;
         std::unique_ptr<SimulatorTimer> simtimer_;

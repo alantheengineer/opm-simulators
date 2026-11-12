@@ -1,0 +1,67 @@
+// Copyright 2026 Dr Alan Tominey
+// SPDX-License-Identifier: Apache-2.0 OR GPL-3.0-or-later
+//
+// Control interface for a running flow simulation. Errors use the gRPC
+// status codes: INVALID_ARGUMENT for a bad request, FAILED_PRECONDITION when
+// the command is not allowed in the current state, UNAVAILABLE when another
+// command is in progress, UNAUTHENTICATED for a missing or wrong token, and
+// INTERNAL when the simulator fails.
+
+syntax = "proto3";
+
+package opm.control.v1;
+
+service Control {
+  rpc GetInfo(GetInfoRequest) returns (InfoReply);
+  rpc GetStatus(GetStatusRequest) returns (StatusReply);
+  // Runs one report step.
+  rpc Step(StepRequest) returns (StatusReply);
+  // Writes the final output. Allowed once, after which only reads and
+  // Shutdown are accepted.
+  rpc Finish(FinishRequest) returns (StatusReply);
+  // Ends all ranks. Finishes first if Finish has not been called.
+  rpc Shutdown(ShutdownRequest) returns (ShutdownReply);
+}
+
+message GetInfoRequest {}
+message GetStatusRequest {}
+message StepRequest {}
+message FinishRequest {}
+message ShutdownRequest {}
+message ShutdownReply {}
+
+message InfoReply {
+  string engine_version = 1;
+  int32 ranks = 2;
+  int32 threads_per_rank = 3;
+  // Cartesian grid dimensions nx, ny, nz.
+  repeated int32 grid_dims = 4;
+  int64 active_cells = 5;
+  // Start of each report step, ISO 8601 UTC. The last entry is the end of
+  // the schedule.
+  repeated string report_dates = 6;
+  // Deck unit system, for example METRIC or FIELD.
+  string unit_system = 7;
+}
+
+enum State {
+  STATE_UNSPECIFIED = 0;
+  STATE_READY = 1;
+  STATE_STEPPING = 2;
+  STATE_DONE = 3;
+  STATE_FINISHED = 4;
+  STATE_FAILED = 5;
+}
+
+message StatusReply {
+  State state = 1;
+  // Report steps completed so far.
+  int32 report_step = 2;
+  int32 report_steps_total = 3;
+  // Simulated time since the start of the schedule, seconds.
+  double elapsed_seconds = 4;
+  // Wall time of the last Step, seconds.
+  double last_step_wall_seconds = 5;
+  // Set when state is STATE_FAILED.
+  string error = 6;
+}
