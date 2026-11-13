@@ -20,7 +20,9 @@ RUN apt-get update \
     && xargs -a /tmp/apt-packages.txt apt-get install -y --no-install-recommends git ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Branch, tag or commit of each dependency.
+# Branch, tag or commit of each dependency. Docker caches each step by its
+# text, so a branch name keeps an old build after the branch moves. Pass a
+# commit, or build with --no-cache.
 ARG OPM_COMMON_REPO=https://github.com/alantheengineer/opm-common.git
 ARG OPM_COMMON_REF=deploy
 ARG OPM_GRID_REPO=https://github.com/OPM/opm-grid.git
