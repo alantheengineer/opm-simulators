@@ -3,9 +3,11 @@
 
 Usage: make-deck.py VARIANT SPE1_DECK TARGET
 
-Both variants turn INJ into a water injector. brine adds BRINE, water
+Each variant turns INJ into a water injector. brine adds BRINE, water
 properties that depend on salt (PVTWSALT) and an initial salt
 concentration. tracer adds one water tracer, SEA, starting at zero.
+thermal adds THERMAL, rock and fluid heat properties, a uniform initial
+temperature and an injection temperature equal to it.
 """
 
 import re
@@ -47,10 +49,23 @@ def tracer(text):
     return replace_once(text, "\n8450 1.270 /\n", "\n8450 1.270 /\n\nTBLKFSEA\n 300*0.0 /\n")
 
 
+def thermal(text):
+    text = replace_once(text, "\nDISGAS\n", "\nDISGAS\nTHERMAL\n")
+    text = replace_once(text, "\nPROPS\n", "\nTHCONR\n 300*35 /\n\nPROPS\n")
+    text = replace_once(
+        text,
+        "3.22E-6 0.318 0.0 /\n",
+        "3.22E-6 0.318 0.0 /\n\nSPECROCK\n 60 35\n 300 35 /\n\nSPECHEAT\n 60 0.5 1.0 0.5\n 300 0.5 1.0 0.5 /\n",
+    )
+    text = replace_once(text, "\n8450 1.270 /\n", "\n8450 1.270 /\n\nRTEMPVD\n 8300 200\n 8450 200 /\n")
+    # A thermal model needs the temperature of every injector.
+    return replace_once(text, "\nTSTEP\n", "\nWTEMP\n 'INJ' 200 /\n/\n\nTSTEP\n")
+
+
 def main():
     variant, source, target = sys.argv[1:4]
     text = water_injector(open(source).read())
-    text = {"brine": brine, "tracer": tracer}[variant](text)
+    text = {"brine": brine, "tracer": tracer, "thermal": thermal}[variant](text)
     open(target, "w").write(text)
 
 

@@ -444,10 +444,10 @@ private:
     static const std::unordered_set<std::string>& allowedKeywords()
     {
         static const std::unordered_set<std::string> keywords {
-            "BOX",      "ENDBOX",   "GCONINJE", "GCONPROD", "GEFAC",  "MULTX",
-            "MULTX-",   "MULTY",    "MULTY-",   "MULTZ",    "MULTZ-", "WCONHIST",
-            "WCONINJE", "WCONINJH", "WCONPROD", "WECON",    "WEFAC",  "WELOPEN",
-            "WELTARG",  "WINJMULT", "WPIMULT",  "WSALT",    "WTMULT", "WTRACER",
+            "BOX",      "ENDBOX", "GCONINJE", "GCONPROD", "GEFAC",    "MULTX",    "MULTX-",
+            "MULTY",    "MULTY-", "MULTZ",    "MULTZ-",   "WCONHIST", "WCONINJE", "WCONINJH",
+            "WCONPROD", "WECON",  "WEFAC",    "WELOPEN",  "WELTARG",  "WINJMULT", "WPIMULT",
+            "WSALT",    "WTEMP",  "WTMULT",   "WTRACER",
         };
         return keywords;
     }

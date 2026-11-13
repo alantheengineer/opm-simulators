@@ -44,8 +44,8 @@ service Control {
   // Sets the controls of one well by writing a WCONPROD or WCONINJE record
   // for it. Applied as ApplySchedule.
   rpc SetWellControl(WellControlRequest) returns (ApplyScheduleReply);
-  // Sets what an injector injects, by writing WSALT and WTRACER records for
-  // it. Applied as ApplySchedule.
+  // Sets what an injector injects, by writing WSALT, WTRACER and WTEMP
+  // records for it. Applied as ApplySchedule.
   rpc SetInjectionComposition(InjectionCompositionRequest) returns (ApplyScheduleReply);
 }
 
@@ -284,4 +284,6 @@ message InjectionCompositionRequest {
   optional double salt_concentration = 2;
   // Tracer name to injected concentration.
   map<string, double> tracers = 3;
+  // Temperature of the injected fluid. Needs a thermal model.
+  optional double temperature = 4;
 }
