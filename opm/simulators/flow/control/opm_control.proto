@@ -47,6 +47,11 @@ service Control {
   // Sets what an injector injects, by writing WSALT, WTRACER and WTEMP
   // records for it. Applied as ApplySchedule.
   rpc SetInjectionComposition(InjectionCompositionRequest) returns (ApplyScheduleReply);
+
+  // Writes the full simulator state at the current report step to an HDF5
+  // file in the output folder. A new run can start from it with
+  // --load-file=FILE --load-step=REPORT_STEP.
+  rpc SaveCheckpoint(SaveCheckpointRequest) returns (SaveCheckpointReply);
 }
 
 message GetInfoRequest {}
@@ -286,4 +291,15 @@ message InjectionCompositionRequest {
   map<string, double> tracers = 3;
   // Temperature of the injected fluid. Needs a thermal model.
   optional double temperature = 4;
+}
+
+message SaveCheckpointRequest {
+  // Letters, digits, - and _. The file is CASE-LABEL.OPMRST.
+  string label = 1;
+}
+
+message SaveCheckpointReply {
+  string file = 1;
+  // The report step to give --load-step.
+  int32 report_step = 2;
 }

@@ -138,6 +138,21 @@ applySchedule(Client& client, const std::string& text)
     return true;
 }
 
+bool
+saveCheckpoint(Client& client, const std::string& label)
+{
+    pb::SaveCheckpointRequest request;
+    request.set_label(label);
+    pb::SaveCheckpointReply reply;
+    if (!check(client.stub().SaveCheckpoint(client.context().get(), request, &reply),
+               "SaveCheckpoint")) {
+        return false;
+    }
+    std::cout << "checkpoint for report step " << reply.report_step() << " written to "
+              << reply.file() << '\n';
+    return true;
+}
+
 // The request must be refused as invalid.
 bool
 checkRefused(Client& client, const std::string& text)
@@ -233,7 +248,8 @@ struct Options {
     std::string pressureFile;
     std::string scheduleFile;
     std::string refusedFile;
-    int scheduleStep = 0;
+    std::string checkpointLabel;
+    int stopAtStep = 0;
 };
 
 std::optional<Options>
@@ -242,7 +258,7 @@ parseOptions(int argc, char** argv)
     if (argc < 2) {
         std::cerr << "Usage: control_step_client ENDPOINT [--token-file=PATH] [--tls-ca=PATH] "
                      "[--pressure-file=PATH]\n"
-                     "           [--schedule-file=PATH --schedule-step=N "
+                     "           [--schedule-file=PATH --stop-at-step=N "
                      "[--refused-schedule-file=PATH]]\n";
         return std::nullopt;
     }
@@ -258,10 +274,12 @@ parseOptions(int argc, char** argv)
             options.pressureFile = arg.substr(16);
         } else if (arg.starts_with("--schedule-file=")) {
             options.scheduleFile = arg.substr(16);
+        } else if (arg.starts_with("--checkpoint-label=")) {
+            options.checkpointLabel = arg.substr(19);
         } else if (arg.starts_with("--refused-schedule-file=")) {
             options.refusedFile = arg.substr(24);
-        } else if (arg.starts_with("--schedule-step=")) {
-            options.scheduleStep = std::stoi(std::string(arg.substr(16)));
+        } else if (arg.starts_with("--stop-at-step=")) {
+            options.stopAtStep = std::stoi(std::string(arg.substr(15)));
         } else {
             std::cerr << "Unknown option " << arg << '\n';
             return std::nullopt;
@@ -281,7 +299,7 @@ main(int argc, char** argv)
     }
     const std::string& scheduleFile = options->scheduleFile;
     const std::string& refusedFile = options->refusedFile;
-    const int scheduleStep = options->scheduleStep;
+    const int stopAtStep = options->stopAtStep;
     const std::string& pressureFile = options->pressureFile;
 
     Client client(options->endpoint, options->token, options->tlsCa);
@@ -302,8 +320,8 @@ main(int argc, char** argv)
     // both paths are covered.
     pb::StatusReply status;
     pb::AdvanceRequest advance;
-    advance.set_report_step(scheduleFile.empty() ? std::max(1, info.report_dates_size() / 2)
-                                                 : scheduleStep);
+    advance.set_report_step(stopAtStep > 0 ? stopAtStep
+                                           : std::max(1, info.report_dates_size() / 2));
     auto advanceContext = client.context();
     auto reader = client.stub().AdvanceTo(advanceContext.get(), advance);
     while (reader->Read(&status)) {
@@ -314,6 +332,9 @@ main(int argc, char** argv)
     }
     std::cout << "advance stopped: " << status.stop_reason() << '\n';
 
+    if (!options->checkpointLabel.empty() && !saveCheckpoint(client, options->checkpointLabel)) {
+        return EXIT_FAILURE;
+    }
     if (!refusedFile.empty() && !checkRefused(client, readFile(refusedFile))) {
         return EXIT_FAILURE;
     }

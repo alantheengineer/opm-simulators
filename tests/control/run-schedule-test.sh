@@ -57,7 +57,7 @@ port=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0));
     > "$out/control.log" 2>&1 &
 pid=$!
 
-if ! "$client" "127.0.0.1:$port" --schedule-step=5 --schedule-file="$change" \
+if ! "$client" "127.0.0.1:$port" --stop-at-step=5 --schedule-file="$change" \
     --refused-schedule-file="$refused"; then
     kill "$pid" 2> /dev/null
     fail "client failed"

@@ -99,33 +99,51 @@ void SimulatorSerializer::save(SimulatorTimer& timer)
         return;
     }
 
-    OPM_BEGIN_PARALLEL_TRY_CATCH();
-
     int nextStep = timer.currentStepNum();
     if ((saveStep_ != -1 && nextStep == saveStep_)  ||
         (saveStride_ != 0 && (nextStep % saveStride_) == 0)) {
-#if HAVE_HDF5
-        const std::string groupName = "/report_step/" + std::to_string(nextStep);
-        if (saveStride_ < 0 || nextStep == saveStride_ || nextStep == saveStep_) {
-            std::filesystem::remove(saveFile_);
-        }
-        HDF5Serializer writer(saveFile_, HDF5File::OpenMode::APPEND, comm_);
-        if (saveStride_ < 0 || nextStep == saveStride_ || nextStep == saveStep_) {
-            const auto data = simulator_.getHeader();
-            writer.writeHeader(data[0], data[1], data[2], data[3], data[4], comm_.size());
-
-            if (comm_.size() > 1) {
-                const auto& cellMapping = simulator_.getCellMapping();
-                std::size_t hash = Dune::hash_range(cellMapping.begin(), cellMapping.end());
-                writer.write(hash, "/", "grid_checksum");
-            }
-        }
-        simulator_.saveState(writer, groupName);
-        writer.write(timer, groupName, "simulator_timer",
-                     HDF5File::DataSetMode::ROOT_ONLY);
-        OpmLog::info("Serialized state written for report step " + std::to_string(nextStep));
-#endif
+        write_(
+            timer, saveFile_, saveStride_ < 0 || nextStep == saveStride_ || nextStep == saveStep_);
     }
+}
+
+void
+SimulatorSerializer::saveTo(SimulatorTimer& timer, const std::string& file)
+{
+#if !HAVE_HDF5
+    throw std::runtime_error("This build has no HDF5, so it cannot save the simulator state");
+#endif
+    write_(timer, file, true);
+}
+
+void
+SimulatorSerializer::write_([[maybe_unused]] SimulatorTimer& timer,
+                            [[maybe_unused]] const std::string& file,
+                            [[maybe_unused]] bool fresh)
+{
+    OPM_BEGIN_PARALLEL_TRY_CATCH();
+
+#if HAVE_HDF5
+    const int nextStep = timer.currentStepNum();
+    const std::string groupName = "/report_step/" + std::to_string(nextStep);
+    if (fresh) {
+        std::filesystem::remove(file);
+    }
+    HDF5Serializer writer(file, HDF5File::OpenMode::APPEND, comm_);
+    if (fresh) {
+        const auto data = simulator_.getHeader();
+        writer.writeHeader(data[0], data[1], data[2], data[3], data[4], comm_.size());
+
+        if (comm_.size() > 1) {
+            const auto& cellMapping = simulator_.getCellMapping();
+            std::size_t hash = Dune::hash_range(cellMapping.begin(), cellMapping.end());
+            writer.write(hash, "/", "grid_checksum");
+        }
+    }
+    simulator_.saveState(writer, groupName);
+    writer.write(timer, groupName, "simulator_timer", HDF5File::DataSetMode::ROOT_ONLY);
+    OpmLog::info("Serialized state written for report step " + std::to_string(nextStep));
+#endif
 
     OPM_END_PARALLEL_TRY_CATCH("Error saving serialized state: ", comm_);
 }

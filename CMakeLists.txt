@@ -1184,6 +1184,14 @@ macro(opm-simulators_targets_hook)
           ${policy}
       )
     endforeach()
+    add_test(NAME control_checkpoint_resumes
+      COMMAND
+        ${PROJECT_SOURCE_DIR}/tests/control/run-checkpoint-test.sh
+        $<TARGET_FILE:flow_blackoil>
+        $<TARGET_FILE:control_step_client>
+        ${PROJECT_SOURCE_DIR}/python/test_data/SPE1CASE1a/SPE1CASE1.DATA
+        ${PROJECT_BINARY_DIR}/tests/control_checkpoint
+    )
     add_test(NAME control_over_tls
       COMMAND
         ${PROJECT_SOURCE_DIR}/tests/control/run-tls-test.sh

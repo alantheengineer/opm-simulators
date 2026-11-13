@@ -273,6 +273,13 @@ public:
      */
     bool runStep(SimulatorTimer& timer);
 
+    /// Writes the state for the next report step to a file that a later run
+    /// can load with --load-file and --load-step.
+    void saveCheckpoint(SimulatorTimer& timer, const std::string& file)
+    {
+        serializer_.saveTo(timer, file);
+    }
+
     /// Totals for the run so far.
     const SimulatorReport& report() const
     {

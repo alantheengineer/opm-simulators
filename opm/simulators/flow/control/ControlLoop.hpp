@@ -294,6 +294,14 @@ namespace detail
                 status.state = State::Finished;
             }
             break;
+        case CommandKind::SaveCheckpoint:
+            if (!canFinish(status.state)) {
+                reply.code = ErrorCode::InvalidState;
+                reply.message = "No checkpoint after the run has finished or failed";
+                break;
+            }
+            reply.checkpoint = driver.saveCheckpoint(command.text);
+            break;
         case CommandKind::FinishSchedule:
             while (canStep(status.state)) {
                 runStep(driver, status);
@@ -342,7 +350,8 @@ namespace detail
             broadcastStrings(comm, command.fields);
             command.siUnits = broadcastFlag(comm, command.siUnits);
         }
-        if (command.kind == CommandKind::ApplySchedule) {
+        if (command.kind == CommandKind::ApplySchedule
+            || command.kind == CommandKind::SaveCheckpoint) {
             std::vector<std::string> text {command.text};
             broadcastStrings(comm, text);
             command.text = text.front();
@@ -453,6 +462,7 @@ startControlServer(const Options& options, const Comm& comm)
 //   SummaryData summary(keys, history);              result on rank 0
 //   bool hasSummaryKey(key) const;                   rank 0
 //   ScheduleChange applySchedule(text);              every rank, same result
+//   Checkpoint saveCheckpoint(label);                collective
 //   std::optional<double> summaryValue(key) const;   rank 0
 //
 // Comm must provide rank(), broadcast(T*, int, int) and max(int).
