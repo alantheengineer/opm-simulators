@@ -197,7 +197,8 @@ message WellData {
   // OPEN, STOP or SHUT.
   string status = 2;
   bool injector = 3;
-  // Active control mode, for example ORAT, RESV or BHP.
+  // Active control mode, for example ORAT, RESV or BHP. Empty when the well
+  // has none.
   string control = 4;
   // Surface rates. Positive into the reservoir, negative out of it.
   double oil_rate = 5;

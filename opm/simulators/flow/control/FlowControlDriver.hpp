@@ -325,8 +325,7 @@ public:
             values.name = name;
             values.status = WellStatus2String(well.dynamicStatus);
             values.injector = !well.current_control.isProducer;
-            values.control = values.injector ? WellInjectorCMode2String(well.current_control.inj)
-                                             : WellProducerCMode2String(well.current_control.prod);
+            values.control = controlName(well.current_control);
             values.oilRate
                 = units.from_si(Measure::liquid_surface_rate, well.rates.get(Rate::oil, 0.0));
             values.waterRate
@@ -454,6 +453,21 @@ public:
     }
 
 private:
+    // Empty when the well has no active control mode, as for some shut or
+    // history wells.
+    static std::string controlName(const data::CurrentControl& control)
+    {
+        if (!control.isProducer) {
+            return control.inj == WellInjectorCMode::CMODE_UNDEFINED
+                ? std::string {}
+                : WellInjectorCMode2String(control.inj);
+        }
+        const auto mode = control.prod;
+        return mode == WellProducerCMode::NONE || mode == WellProducerCMode::CMODE_UNDEFINED
+            ? std::string {}
+            : WellProducerCMode2String(mode);
+    }
+
     static int difference(unsigned int after, unsigned int before)
     {
         return static_cast<int>(after - before);
