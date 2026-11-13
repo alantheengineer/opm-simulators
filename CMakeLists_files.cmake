@@ -497,6 +497,7 @@ list (APPEND TEST_SOURCE_FILES
   tests/test_compositional_cpr_weights.cpp
   tests/test_compositionalcontainer.cpp
   tests/test_compwell_bhp_limit.cpp
+  tests/test_compwell_connection_pressure.cpp
   tests/test_compwell_crossflow.cpp
   tests/test_compwell_equations.cpp
   tests/test_compwell_jacobian.cpp
@@ -747,6 +748,7 @@ list (APPEND TEST_DATA_FILES
   tests/equil_co2store_go.DATA
   tests/equil_co2store_gw.DATA
   tests/equil_co2store_gw_depthedit.DATA
+  tests/equil_swatinit_subdivision.DATA
   tests/equil_wetgas.DATA
   tests/equil_liveoil.DATA
   tests/equil_humidwetgas.DATA
@@ -795,6 +797,8 @@ list (APPEND TEST_DATA_FILES
   tests/RC_MASTER_GROUP_EXCLUSION.DATA
   tests/RC_MASTER_GROUP_EXCLUSION_ANCESTOR.DATA
   tests/RC_MASTER_GROUP_EXCLUSION_EFFICIENCY.DATA
+  tests/RC_MASTER_GROUP_EXCLUSION_GASLIFT.DATA
+  tests/RC_MASTER_GROUP_EXCLUSION_GLIFTOPT.DATA
   tests/RC_MASTER_GROUP_EXCLUSION_ZERO_GUIDE_RATES.DATA
   tests/RC_MASTER_GROUP_EXCLUSION_NESTED.DATA
   tests/RC_MASTER_GROUP_EXCLUSION_SIBLINGS.DATA
