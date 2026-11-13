@@ -10,7 +10,8 @@
 #   docker run -v /path/to/case:/data -p 50051:50051 \
 #     -e CONTROL_TOKEN_FILE=/data/token opm-flow /data/CASE.DATA --output-dir=/data/out
 #
-# See docker/entrypoint.sh for the settings.
+# See docker/entrypoint.sh for the settings. The control interface is in
+# /opt/opm/share/opm_control.proto.
 
 FROM ubuntu:24.04 AS build
 
@@ -50,6 +51,8 @@ RUN cmake -S /src/opm-simulators -B /build/sim -G Ninja -DCMAKE_BUILD_TYPE=Relea
     && client=$(find /build/sim -name control_step_client -type f -perm -u+x | head -n 1) \
     && install -D -t /opt/opm/bin /build/sim/bin/flow "$client" \
     && install -D /src/opm-simulators/docker/entrypoint.sh /opt/opm/bin/opm-entrypoint \
+    && install -D -m 644 /src/opm-simulators/opm/simulators/flow/control/opm_control.proto \
+       /opt/opm/share/opm_control.proto \
     && /src/opm-simulators/docker/runtime-packages.sh /opt/opm/bin/flow /opt/opm/bin/control_step_client \
        > /opt/opm/runtime-packages.txt
 
