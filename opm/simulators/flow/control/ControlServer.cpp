@@ -433,7 +433,13 @@ public:
         builder.SetSyncServerOption(grpc::ServerBuilder::SyncServerOption::NUM_CQS, 1);
         builder.SetSyncServerOption(grpc::ServerBuilder::SyncServerOption::MIN_POLLERS, 1);
         builder.SetSyncServerOption(grpc::ServerBuilder::SyncServerOption::MAX_POLLERS, 2);
-        builder.AddListeningPort(options.endpoint, grpc::InsecureServerCredentials(), &port_);
+        auto credentials = grpc::InsecureServerCredentials();
+        if (!options.tlsCertificate.empty()) {
+            grpc::SslServerCredentialsOptions ssl;
+            ssl.pem_key_cert_pairs.push_back({options.tlsKey, options.tlsCertificate});
+            credentials = grpc::SslServerCredentials(ssl);
+        }
+        builder.AddListeningPort(options.endpoint, credentials, &port_);
         builder.RegisterService(this);
         server_ = builder.BuildAndStart();
         if (!server_ || port_ == 0) {

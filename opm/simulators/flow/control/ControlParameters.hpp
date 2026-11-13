@@ -34,6 +34,15 @@ struct ControlTokenFile {
 struct ControlIdleTimeout {
     static constexpr int value = 900;
 };
+struct ControlOnDisconnect {
+    static constexpr auto value = "pause";
+};
+struct ControlTlsCert {
+    static constexpr auto value = "";
+};
+struct ControlTlsKey {
+    static constexpr auto value = "";
+};
 
 } // namespace Opm::Parameters
 
@@ -42,9 +51,10 @@ namespace Opm::Control
 
 void registerControlParameters();
 
-// Settings from the command line. The token file is read only on the root
-// rank, which runs the server. Throws if an endpoint is given and the build
-// has no control server, or if the token file cannot be read.
+// Settings from the command line. The token and TLS files are read only on
+// the root rank, which runs the server. Throws if an endpoint is given and
+// the build has no control server, or if a setting is invalid or a file
+// cannot be read.
 Options controlOptions(bool root);
 
 } // namespace Opm::Control

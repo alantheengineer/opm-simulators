@@ -34,6 +34,15 @@ namespace Opm::Control
 namespace
 {
 
+    std::string readFile(const std::string& path, const std::string& what)
+    {
+        std::ifstream in(path);
+        if (!in) {
+            throw std::runtime_error("Cannot read " + what + " " + path);
+        }
+        return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+    }
+
     std::string readToken(const std::string& path)
     {
         std::ifstream in(path);
@@ -61,7 +70,15 @@ registerControlParameters()
         "File holding the bearer token clients must send. "
         "Required unless the endpoint is a loopback address.");
     Parameters::Register<Parameters::ControlIdleTimeout>(
-        "Seconds to wait for a command before finishing the run and exiting.");
+        "Seconds to wait for a command before acting on --control-on-disconnect.");
+    Parameters::Register<Parameters::ControlOnDisconnect>(
+        "What to do when no command arrives within the idle timeout: pause writes the "
+        "output so far and exits, finish runs the rest of the schedule, abort exits "
+        "with an error.");
+    Parameters::Register<Parameters::ControlTlsCert>(
+        "PEM certificate for TLS on the control endpoint.");
+    Parameters::Register<Parameters::ControlTlsKey>(
+        "PEM private key for TLS on the control endpoint.");
 }
 
 Options
@@ -84,6 +101,27 @@ controlOptions([[maybe_unused]] bool root)
         throw std::invalid_argument("--control-idle-timeout must be positive");
     }
     options.idleTimeout = std::chrono::seconds(timeout);
+
+    const std::string onDisconnect = Parameters::Get<Parameters::ControlOnDisconnect>();
+    if (onDisconnect == "pause") {
+        options.onDisconnect = OnDisconnect::Pause;
+    } else if (onDisconnect == "finish") {
+        options.onDisconnect = OnDisconnect::Finish;
+    } else if (onDisconnect == "abort") {
+        options.onDisconnect = OnDisconnect::Abort;
+    } else {
+        throw std::invalid_argument("--control-on-disconnect must be pause, finish or abort");
+    }
+
+    const std::string cert = Parameters::Get<Parameters::ControlTlsCert>();
+    const std::string key = Parameters::Get<Parameters::ControlTlsKey>();
+    if (cert.empty() != key.empty()) {
+        throw std::invalid_argument("--control-tls-cert and --control-tls-key go together");
+    }
+    if (root && !cert.empty()) {
+        options.tlsCertificate = readFile(cert, "control TLS certificate");
+        options.tlsKey = readFile(key, "control TLS key");
+    }
     return options;
 #endif
 }

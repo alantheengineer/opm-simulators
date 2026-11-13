@@ -24,10 +24,12 @@
 
 #include <opm/simulators/flow/control/ControlLoop.hpp>
 #include <opm/simulators/flow/control/ControlServer.hpp>
+#include <opm/simulators/flow/control/Watchdog.hpp>
 #include <opm/simulators/flow/control/opm_control.grpc.pb.h>
 
 #include <grpcpp/grpcpp.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -231,8 +233,8 @@ struct Fixture {
     explicit Fixture(const Options& options = loopback())
         : server(startControlServer(options, SerialComm {}))
         , client(connect(*server))
-        , exitStatus(std::async(std::launch::async, [this] {
-            return runControlLoop(driver, SerialComm {}, server.get());
+        , exitStatus(std::async(std::launch::async, [this, policy = options.onDisconnect] {
+            return runControlLoop(driver, SerialComm {}, server.get(), policy);
         }))
     {
     }
@@ -906,4 +908,38 @@ BOOST_AUTO_TEST_CASE(SetInjectionCompositionWritesRecords)
 
     BOOST_REQUIRE(shutdown(*f.client).ok());
     f.exitStatus.get();
+}
+
+BOOST_AUTO_TEST_CASE(IdleTimeoutCanRunToTheEnd)
+{
+    Options options = loopback(std::chrono::seconds(1));
+    options.onDisconnect = OnDisconnect::Finish;
+    Fixture f(options);
+    BOOST_CHECK_EQUAL(f.exitStatus.get(), EXIT_SUCCESS);
+    BOOST_CHECK_EQUAL(f.driver.current, f.driver.steps);
+    BOOST_CHECK(f.driver.finished);
+}
+
+BOOST_AUTO_TEST_CASE(IdleTimeoutCanAbort)
+{
+    Options options = loopback(std::chrono::seconds(1));
+    options.onDisconnect = OnDisconnect::Abort;
+    Fixture f(options);
+    BOOST_CHECK_EQUAL(f.exitStatus.get(), EXIT_FAILURE);
+    BOOST_CHECK_EQUAL(f.driver.current, 0);
+    BOOST_CHECK(!f.driver.finished);
+}
+
+BOOST_AUTO_TEST_CASE(WatchdogFiresUnlessStopped)
+{
+    std::atomic<int> fired {0};
+    {
+        const Watchdog watchdog(std::chrono::milliseconds(20), [&fired] { ++fired; });
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+    BOOST_CHECK_EQUAL(fired.load(), 1);
+    {
+        const Watchdog watchdog(std::chrono::seconds(30), [&fired] { ++fired; });
+    }
+    BOOST_CHECK_EQUAL(fired.load(), 1);
 }

@@ -462,7 +462,8 @@ namespace Opm {
             const auto server = Control::startControlServer(controlOptions_, comm);
             runSimulatorInitCallback_();
             Control::FlowControlDriver<TypeTag> driver(*this);
-            return Control::runControlLoop(driver, comm, server.get());
+            return Control::runControlLoop(
+                driver, comm, server.get(), controlOptions_.onDisconnect);
         }
 
         // Output summary after simulation has completed
