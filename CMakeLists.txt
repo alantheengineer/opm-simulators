@@ -1145,6 +1145,17 @@ macro(opm-simulators_targets_hook)
         tracer
         ${PROJECT_BINARY_DIR}/tests/control_tracer
     )
+    if(TARGET flow_energy)
+      add_test(NAME control_thermal_matches_deck
+        COMMAND
+          ${PROJECT_SOURCE_DIR}/tests/control/run-composition-test.sh
+          $<TARGET_FILE:flow_energy>
+          $<TARGET_FILE:control_step_client>
+          ${PROJECT_SOURCE_DIR}/python/test_data/SPE1CASE1a/SPE1CASE1.DATA
+          thermal
+          ${PROJECT_BINARY_DIR}/tests/control_thermal
+      )
+    endif()
     if(TARGET flow_brine)
       add_test(NAME control_brine_matches_deck
         COMMAND

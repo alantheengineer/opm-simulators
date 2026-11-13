@@ -219,7 +219,7 @@ namespace
         return !name.empty() && name.find_first_of("'/ \t\r\n") == std::string::npos;
     }
 
-    // Writes the WSALT and WTRACER records for an InjectionCompositionRequest.
+    // Writes the WSALT, WTRACER and WTEMP records for an InjectionCompositionRequest.
     // Empty error if the request is well formed.
     std::string compositionText(const pb::InjectionCompositionRequest& request, std::string& error)
     {
@@ -228,8 +228,9 @@ namespace
             error = "A well name is needed, without quotes, slashes or spaces";
             return {};
         }
-        if (!request.has_salt_concentration() && request.tracers().empty()) {
-            error = "Give a salt concentration or at least one tracer";
+        if (!request.has_salt_concentration() && !request.has_temperature()
+            && request.tracers().empty()) {
+            error = "Give a salt concentration, a temperature or at least one tracer";
             return {};
         }
         std::ostringstream text;
@@ -259,6 +260,13 @@ namespace
                 text << " '" << well << "' '" << name << "' " << concentration << " /\n";
             }
             text << "/\n";
+        }
+        if (request.has_temperature()) {
+            if (!std::isfinite(request.temperature())) {
+                error = "Temperature must be finite";
+                return {};
+            }
+            text << "WTEMP\n '" << well << "' " << request.temperature() << " /\n/\n";
         }
         return text.str();
     }

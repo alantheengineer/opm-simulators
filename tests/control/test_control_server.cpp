@@ -219,6 +219,10 @@ connect(const ControlServer& server)
 {
     auto channel = grpc::CreateChannel("127.0.0.1:" + std::to_string(server.port()),
                                        grpc::InsecureChannelCredentials());
+    // A first call on a channel still connecting can fail at once on a busy
+    // machine.
+    BOOST_REQUIRE(
+        channel->WaitForConnected(std::chrono::system_clock::now() + std::chrono::seconds(30)));
     return pb::Control::NewStub(channel);
 }
 
@@ -315,7 +319,7 @@ BOOST_AUTO_TEST_CASE(ShutdownFinishesTheRun)
     Fixture f;
     grpc::Status status;
     step(*f.client, status);
-    BOOST_REQUIRE(status.ok());
+    BOOST_REQUIRE_MESSAGE(status.ok(), status.error_message());
     BOOST_REQUIRE(shutdown(*f.client).ok());
     BOOST_CHECK_EQUAL(f.exitStatus.get(), EXIT_SUCCESS);
     BOOST_CHECK(f.driver.finished);
@@ -327,7 +331,7 @@ BOOST_AUTO_TEST_CASE(SimulatorFailure)
     f.driver.failAt = 1;
     grpc::Status status;
     step(*f.client, status);
-    BOOST_REQUIRE(status.ok());
+    BOOST_REQUIRE_MESSAGE(status.ok(), status.error_message());
     step(*f.client, status);
     BOOST_CHECK_EQUAL(status.error_code(), grpc::StatusCode::INTERNAL);
     BOOST_CHECK_EQUAL(status.error_message(), "Linear solver failed");
@@ -442,7 +446,7 @@ BOOST_AUTO_TEST_CASE(CellDataIsStreamedInChunks)
     request.add_fields("PRESSURE");
     grpc::Status status;
     const auto chunks = readCells(*f.client, request, status);
-    BOOST_REQUIRE(status.ok());
+    BOOST_REQUIRE_MESSAGE(status.ok(), status.error_message());
     BOOST_REQUIRE_EQUAL(chunks.size(), 3U);
 
     std::vector<double> values;
@@ -476,7 +480,7 @@ BOOST_AUTO_TEST_CASE(BoxSelectionSendsCells)
     box.set_k2(3);
     grpc::Status status;
     const auto chunks = readCells(*f.client, request, status);
-    BOOST_REQUIRE(status.ok());
+    BOOST_REQUIRE_MESSAGE(status.ok(), status.error_message());
     BOOST_REQUIRE_EQUAL(chunks.size(), 1U);
     BOOST_CHECK_EQUAL(chunks[0].unit(), "PA");
     BOOST_CHECK_EQUAL(chunks[0].cells_size(), 3);
@@ -502,7 +506,7 @@ BOOST_AUTO_TEST_CASE(BadRequestLeavesTheRunUsable)
     BOOST_CHECK_EQUAL(status.error_code(), grpc::StatusCode::INVALID_ARGUMENT);
 
     const auto reply = step(*f.client, status);
-    BOOST_REQUIRE(status.ok());
+    BOOST_REQUIRE_MESSAGE(status.ok(), status.error_message());
     BOOST_CHECK_EQUAL(reply.state(), pb::STATE_STEPPING);
     BOOST_CHECK_EQUAL(reply.last_step().time_steps(), 2);
     BOOST_CHECK_EQUAL(reply.last_step().cuts(), 1);
@@ -518,7 +522,7 @@ BOOST_AUTO_TEST_CASE(WellsAndSummary)
     grpc::Status status;
     step(*f.client, status);
     step(*f.client, status);
-    BOOST_REQUIRE(status.ok());
+    BOOST_REQUIRE_MESSAGE(status.ok(), status.error_message());
 
     grpc::ClientContext wellContext;
     pb::WellDataReply wells;
@@ -594,7 +598,7 @@ BOOST_AUTO_TEST_CASE(AdvanceToReportStep)
     request.set_report_step(3);
     grpc::Status status;
     const auto messages = advance(*f.client, request, status);
-    BOOST_REQUIRE(status.ok());
+    BOOST_REQUIRE_MESSAGE(status.ok(), status.error_message());
     // One message per report step. The last says why it stopped.
     BOOST_REQUIRE_EQUAL(messages.size(), 3U);
     BOOST_CHECK_EQUAL(messages[0].report_step(), 1);
@@ -614,7 +618,7 @@ BOOST_AUTO_TEST_CASE(AdvanceToReportStep)
 
     request.set_report_step(5);
     const auto rest = advance(*f.client, request, status);
-    BOOST_REQUIRE(status.ok());
+    BOOST_REQUIRE_MESSAGE(status.ok(), status.error_message());
     BOOST_CHECK_EQUAL(rest.back().state(), pb::STATE_DONE);
 
     BOOST_REQUIRE(shutdown(*f.client).ok());
@@ -629,7 +633,7 @@ BOOST_AUTO_TEST_CASE(AdvanceToDate)
     request.set_date("2026-01-15T00:00:00Z");
     grpc::Status status;
     const auto messages = advance(*f.client, request, status);
-    BOOST_REQUIRE(status.ok());
+    BOOST_REQUIRE_MESSAGE(status.ok(), status.error_message());
     BOOST_CHECK_EQUAL(messages.back().report_step(), 1);
 
     request.set_date("2030-01-01T00:00:00Z");
@@ -656,7 +660,7 @@ BOOST_AUTO_TEST_CASE(AdvanceStopsOnCondition)
     stop.set_value(75.0);
     grpc::Status status;
     const auto messages = advance(*f.client, request, status);
-    BOOST_REQUIRE(status.ok());
+    BOOST_REQUIRE_MESSAGE(status.ok(), status.error_message());
     // FOPR is 100 - 10 * step, so it first drops below 75 after step 3.
     BOOST_CHECK_EQUAL(messages.back().report_step(), 3);
     BOOST_CHECK_EQUAL(messages.back().stop_reason(), "FOPR below 75.000000");
@@ -860,12 +864,13 @@ BOOST_AUTO_TEST_CASE(SetInjectionCompositionWritesRecords)
     request.set_salt_concentration(15.5);
     (*request.mutable_tracers())["SEA"] = 1.0;
     (*request.mutable_tracers())["FW"] = 0.25;
+    request.set_temperature(80);
     grpc::ClientContext context;
     BOOST_REQUIRE(f.client->SetInjectionComposition(&context, request, &reply).ok());
     // Tracers in name order, whatever order the map holds them in.
-    BOOST_CHECK_EQUAL(
-        reply.text(),
-        "WSALT\n 'INJ' 15.5 /\n/\nWTRACER\n 'INJ' 'FW' 0.25 /\n 'INJ' 'SEA' 1 /\n/\n");
+    BOOST_CHECK_EQUAL(reply.text(),
+                      "WSALT\n 'INJ' 15.5 /\n/\nWTRACER\n 'INJ' 'FW' 0.25 /\n 'INJ' 'SEA' 1 /\n/\n"
+                      "WTEMP\n 'INJ' 80 /\n/\n");
     BOOST_CHECK_EQUAL(f.driver.appliedText, reply.text());
 
     const auto refused = [&f](const pb::InjectionCompositionRequest& r) {
@@ -881,6 +886,15 @@ BOOST_AUTO_TEST_CASE(SetInjectionCompositionWritesRecords)
     pb::InjectionCompositionRequest negative = request;
     negative.set_salt_concentration(-1.0);
     BOOST_CHECK_EQUAL(refused(negative), grpc::StatusCode::INVALID_ARGUMENT);
+
+    pb::InjectionCompositionRequest hot;
+    hot.set_well("INJ");
+    hot.set_temperature(std::numeric_limits<double>::quiet_NaN());
+    BOOST_CHECK_EQUAL(refused(hot), grpc::StatusCode::INVALID_ARGUMENT);
+    hot.set_temperature(120);
+    grpc::ClientContext temperatureOnly;
+    BOOST_REQUIRE(f.client->SetInjectionComposition(&temperatureOnly, hot, &reply).ok());
+    BOOST_CHECK_EQUAL(reply.text(), "WTEMP\n 'INJ' 120 /\n/\n");
 
     pb::InjectionCompositionRequest badTracer = request;
     (*badTracer.mutable_tracers())["SEA WATER"] = 1.0;
