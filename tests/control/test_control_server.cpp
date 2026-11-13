@@ -153,7 +153,16 @@ struct FakeDriver {
         prod.status = "OPEN";
         prod.control = "ORAT";
         prod.oilRate = -100.0;
+        prod.bhpLimit = 50.0;
         data.wells.push_back(prod);
+        WellValues inj;
+        inj.name = "INJ";
+        inj.status = "OPEN";
+        inj.injector = true;
+        inj.control = "RATE";
+        inj.injectorType = "WATER";
+        inj.bhpLimit = 400.0;
+        data.wells.push_back(inj);
         data.liquidRateUnit = "SM3/DAY";
         return data;
     }
@@ -534,10 +543,14 @@ BOOST_AUTO_TEST_CASE(WellsAndSummary)
     grpc::ClientContext wellContext;
     pb::WellDataReply wells;
     BOOST_REQUIRE(f.client->GetWellData(&wellContext, pb::WellDataRequest {}, &wells).ok());
-    BOOST_REQUIRE_EQUAL(wells.wells_size(), 1);
+    BOOST_REQUIRE_EQUAL(wells.wells_size(), 2);
     BOOST_CHECK_EQUAL(wells.wells(0).name(), "PROD");
     BOOST_CHECK_EQUAL(wells.wells(0).control(), "ORAT");
     BOOST_CHECK_EQUAL(wells.wells(0).oil_rate(), -100.0);
+    BOOST_CHECK_EQUAL(wells.wells(0).injector_type(), "");
+    BOOST_CHECK_EQUAL(wells.wells(0).bhp_limit(), 50.0);
+    BOOST_CHECK_EQUAL(wells.wells(1).injector_type(), "WATER");
+    BOOST_CHECK_EQUAL(wells.wells(1).bhp_limit(), 400.0);
     BOOST_CHECK_EQUAL(wells.liquid_rate_unit(), "SM3/DAY");
 
     pb::SummaryRequest request;

@@ -209,6 +209,10 @@ message WellData {
   double temperature = 10;
   // Salt mass rate, when the model has brine.
   double salt_rate = 11;
+  // WATER, GAS, OIL or MULTI for an injector. Empty for a producer.
+  string injector_type = 12;
+  // Bottom hole pressure limit in force for the next report step.
+  double bhp_limit = 13;
 }
 
 message WellDataReply {

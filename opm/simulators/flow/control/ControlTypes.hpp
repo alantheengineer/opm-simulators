@@ -146,6 +146,8 @@ struct WellValues {
     double thp = 0.0;
     double temperature = 0.0;
     double saltRate = 0.0;
+    std::string injectorType;
+    double bhpLimit = 0.0;
 };
 
 struct WellData {

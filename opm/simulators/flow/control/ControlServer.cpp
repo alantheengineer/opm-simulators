@@ -153,6 +153,8 @@ namespace
             w.set_thp(well.thp);
             w.set_temperature(well.temperature);
             w.set_salt_rate(well.saltRate);
+            w.set_injector_type(well.injectorType);
+            w.set_bhp_limit(well.bhpLimit);
         }
         out.set_liquid_rate_unit(data.liquidRateUnit);
         out.set_gas_rate_unit(data.gasRateUnit);

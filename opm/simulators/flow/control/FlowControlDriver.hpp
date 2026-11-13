@@ -35,8 +35,12 @@
 #include <opm/input/eclipse/Parser/Parser.hpp>
 #include <opm/input/eclipse/Schedule/Action/SimulatorUpdate.hpp>
 #include <opm/input/eclipse/Schedule/Schedule.hpp>
+#include <opm/input/eclipse/Schedule/ScheduleTypes.hpp>
 #include <opm/input/eclipse/Schedule/SummaryState.hpp>
+#include <opm/input/eclipse/Schedule/Well/Well.hpp>
 #include <opm/input/eclipse/Schedule/Well/WellEnums.hpp>
+#include <opm/input/eclipse/Schedule/Well/WellInjectionControls.hpp>
+#include <opm/input/eclipse/Schedule/Well/WellProductionControls.hpp>
 #include <opm/input/eclipse/Units/UnitSystem.hpp>
 
 #include <opm/material/densead/Math.hpp>
@@ -293,11 +297,18 @@ public:
         const auto& collect = problem.eclWriter().collectOnIORank();
         const data::Wells wells
             = collect.isParallel() ? collect.globalWellData() : problem.wellModel().wellData();
+        const auto& schedule = simulator.vanguard().schedule();
+        const auto& summaryState = simulator.vanguard().summaryState();
+        // The wells and limits in force for the next report step to run.
+        const auto step = static_cast<std::size_t>(std::min(reportStep(), reportStepsTotal() - 1));
+        auto wellNames = schedule.wellNames(step);
+        std::sort(wellNames.begin(), wellNames.end());
 
         for (const auto& name : names) {
-            const bool found = std::any_of(wells.begin(), wells.end(), [&name](const auto& well) {
-                return matches(name, well.first);
-            });
+            const bool found
+                = std::any_of(wellNames.begin(), wellNames.end(), [&name](const auto& well) {
+                      return matches(name, well);
+                  });
             if (!found) {
                 throw BadRequest("No well matches " + name);
             }
@@ -311,9 +322,7 @@ public:
         data.pressureUnit = units.name(Measure::pressure);
         data.temperatureUnit = units.name(Measure::temperature);
         data.saltRateUnit = units.name(Measure::mass_rate);
-        for (const auto& entry : wells) {
-            const std::string& name = entry.first;
-            const auto& well = entry.second;
+        for (const auto& name : wellNames) {
             const bool wanted
                 = names.empty() || std::any_of(names.begin(), names.end(), [&name](const auto& p) {
                       return matches(p, name);
@@ -321,10 +330,31 @@ public:
             if (!wanted) {
                 continue;
             }
+            const auto& deckWell = schedule.getWell(name, step);
             WellValues values;
             values.name = name;
+            values.injector = deckWell.isInjector();
+            if (values.injector) {
+                const auto controls = deckWell.injectionControls(summaryState);
+                values.injectorType = InjectorType2String(deckWell.injectorType());
+                values.bhpLimit = units.from_si(Measure::pressure, controls.bhp_limit);
+                values.control = modeName(controls.cmode);
+            } else {
+                const auto controls = deckWell.productionControls(summaryState);
+                values.bhpLimit = units.from_si(Measure::pressure, controls.bhp_limit);
+                values.control = modeName(controls.cmode);
+            }
+            values.status = WellStatus2String(deckWell.getStatus());
+
+            // Before the first step there is no solution, and the deck says
+            // how the well starts.
+            const auto it = wells.find(name);
+            if (it == wells.end()) {
+                data.wells.push_back(std::move(values));
+                continue;
+            }
+            const auto& well = it->second;
             values.status = WellStatus2String(well.dynamicStatus);
-            values.injector = !well.current_control.isProducer;
             values.control = controlName(well.current_control);
             values.oilRate
                 = units.from_si(Measure::liquid_surface_rate, well.rates.get(Rate::oil, 0.0));
@@ -455,17 +485,22 @@ public:
 private:
     // Empty when the well has no active control mode, as for some shut or
     // history wells.
-    static std::string controlName(const data::CurrentControl& control)
+    static std::string modeName(WellInjectorCMode mode)
     {
-        if (!control.isProducer) {
-            return control.inj == WellInjectorCMode::CMODE_UNDEFINED
-                ? std::string {}
-                : WellInjectorCMode2String(control.inj);
-        }
-        const auto mode = control.prod;
+        return mode == WellInjectorCMode::CMODE_UNDEFINED ? std::string {}
+                                                          : WellInjectorCMode2String(mode);
+    }
+
+    static std::string modeName(WellProducerCMode mode)
+    {
         return mode == WellProducerCMode::NONE || mode == WellProducerCMode::CMODE_UNDEFINED
             ? std::string {}
             : WellProducerCMode2String(mode);
+    }
+
+    static std::string controlName(const data::CurrentControl& control)
+    {
+        return control.isProducer ? modeName(control.prod) : modeName(control.inj);
     }
 
     static int difference(unsigned int after, unsigned int before)
@@ -479,10 +514,10 @@ private:
     static const std::unordered_set<std::string>& allowedKeywords()
     {
         static const std::unordered_set<std::string> keywords {
-            "BOX",      "ENDBOX", "GCONINJE", "GCONPROD", "GEFAC",    "MULTX",    "MULTX-",
-            "MULTY",    "MULTY-", "MULTZ",    "MULTZ-",   "WCONHIST", "WCONINJE", "WCONINJH",
-            "WCONPROD", "WECON",  "WEFAC",    "WELOPEN",  "WELTARG",  "WINJMULT", "WPIMULT",
-            "WSALT",    "WTEMP",  "WTMULT",   "WTRACER",
+            "BOX",      "ENDBOX",   "GCONINJE", "GCONPROD", "GEFAC",    "MULTX",    "MULTX-",
+            "MULTY",    "MULTY-",   "MULTZ",    "MULTZ-",   "NEXTSTEP", "WCONHIST", "WCONINJE",
+            "WCONINJH", "WCONPROD", "WECON",    "WEFAC",    "WELOPEN",  "WELTARG",  "WINJMULT",
+            "WPIMULT",  "WSALT",    "WTEMP",    "WTMULT",   "WTRACER",
         };
         return keywords;
     }

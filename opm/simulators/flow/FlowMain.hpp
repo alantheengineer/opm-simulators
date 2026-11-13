@@ -461,6 +461,7 @@ namespace Opm {
             const auto& comm = FlowGenericVanguard::comm();
             const auto server = Control::startControlServer(controlOptions_, comm);
             runSimulatorInitCallback_();
+            simulator_->loadCheckpoint(*simtimer_);
             Control::FlowControlDriver<TypeTag> driver(*this);
             return Control::runControlLoop(
                 driver, comm, server.get(), controlOptions_.onDisconnect);

@@ -280,6 +280,11 @@ public:
         serializer_.saveTo(timer, file);
     }
 
+    /// Loads the state given by --load-file now, instead of at the start of
+    /// the first step, so a step control client sees the loaded report step
+    /// and schedule before it sends anything. Does nothing without a file.
+    void loadCheckpoint(SimulatorTimer& timer);
+
     /// Totals for the run so far.
     const SimulatorReport& report() const
     {
@@ -347,6 +352,9 @@ protected:
      * flag is cleared after, so subsequent calls skip the dump.
      */
     std::unique_ptr<Solver> createSolver(WellModel& wellModel);
+
+    /// Restores the state from the OPMRST file once the episode is set up.
+    void loadSerializedState_(const SimulatorTimer& timer);
 
     const EclipseState& eclState() const { return simulator_.vanguard().eclState(); }
 
