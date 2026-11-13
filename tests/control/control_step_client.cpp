@@ -200,10 +200,11 @@ printWells(Client& client)
         return false;
     }
     for (const auto& well : reply.wells()) {
-        std::cout << "well " << well.name() << ' ' << well.status() << ' ' << well.control()
-                  << ", oil " << well.oil_rate() << ' ' << reply.liquid_rate_unit() << ", gas "
-                  << well.gas_rate() << ' ' << reply.gas_rate_unit() << ", bhp " << well.bhp()
-                  << ' ' << reply.pressure_unit() << '\n';
+        std::cout << "well " << well.name() << ' ' << well.status() << ' ' << well.control() << ' '
+                  << well.injector_type() << ", oil " << well.oil_rate() << ' '
+                  << reply.liquid_rate_unit() << ", gas " << well.gas_rate() << ' '
+                  << reply.gas_rate_unit() << ", bhp " << well.bhp() << ' ' << reply.pressure_unit()
+                  << ", bhp limit " << well.bhp_limit() << '\n';
     }
     return true;
 }

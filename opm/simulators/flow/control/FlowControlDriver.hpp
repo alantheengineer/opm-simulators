@@ -35,8 +35,12 @@
 #include <opm/input/eclipse/Parser/Parser.hpp>
 #include <opm/input/eclipse/Schedule/Action/SimulatorUpdate.hpp>
 #include <opm/input/eclipse/Schedule/Schedule.hpp>
+#include <opm/input/eclipse/Schedule/ScheduleTypes.hpp>
 #include <opm/input/eclipse/Schedule/SummaryState.hpp>
+#include <opm/input/eclipse/Schedule/Well/Well.hpp>
 #include <opm/input/eclipse/Schedule/Well/WellEnums.hpp>
+#include <opm/input/eclipse/Schedule/Well/WellInjectionControls.hpp>
+#include <opm/input/eclipse/Schedule/Well/WellProductionControls.hpp>
 #include <opm/input/eclipse/Units/UnitSystem.hpp>
 
 #include <opm/material/densead/Math.hpp>
@@ -304,6 +308,10 @@ public:
         }
 
         const auto& units = simulator.vanguard().eclState().getUnits();
+        const auto& schedule = simulator.vanguard().schedule();
+        const auto& summaryState = simulator.vanguard().summaryState();
+        // Limits in force for the next report step to run.
+        const auto step = static_cast<std::size_t>(std::min(reportStep(), reportStepsTotal() - 1));
         using Rate = data::Rates::opt;
         WellData data;
         data.liquidRateUnit = units.name(Measure::liquid_surface_rate);
@@ -336,6 +344,15 @@ public:
             values.thp = units.from_si(Measure::pressure, well.thp);
             values.temperature = units.from_si(Measure::temperature, well.temperature);
             values.saltRate = units.from_si(Measure::mass_rate, well.rates.get(Rate::brine, 0.0));
+            const auto& deckWell = schedule.getWell(name, step);
+            if (deckWell.isInjector()) {
+                values.injectorType = InjectorType2String(deckWell.injectorType());
+                values.bhpLimit = units.from_si(Measure::pressure,
+                                                deckWell.injectionControls(summaryState).bhp_limit);
+            } else {
+                values.bhpLimit = units.from_si(
+                    Measure::pressure, deckWell.productionControls(summaryState).bhp_limit);
+            }
             data.wells.push_back(std::move(values));
         }
         return data;
@@ -479,10 +496,10 @@ private:
     static const std::unordered_set<std::string>& allowedKeywords()
     {
         static const std::unordered_set<std::string> keywords {
-            "BOX",      "ENDBOX", "GCONINJE", "GCONPROD", "GEFAC",    "MULTX",    "MULTX-",
-            "MULTY",    "MULTY-", "MULTZ",    "MULTZ-",   "WCONHIST", "WCONINJE", "WCONINJH",
-            "WCONPROD", "WECON",  "WEFAC",    "WELOPEN",  "WELTARG",  "WINJMULT", "WPIMULT",
-            "WSALT",    "WTEMP",  "WTMULT",   "WTRACER",
+            "BOX",      "ENDBOX",   "GCONINJE", "GCONPROD", "GEFAC",    "MULTX",    "MULTX-",
+            "MULTY",    "MULTY-",   "MULTZ",    "MULTZ-",   "NEXTSTEP", "WCONHIST", "WCONINJE",
+            "WCONINJH", "WCONPROD", "WECON",    "WEFAC",    "WELOPEN",  "WELTARG",  "WINJMULT",
+            "WPIMULT",  "WSALT",    "WTEMP",    "WTMULT",   "WTRACER",
         };
         return keywords;
     }

@@ -58,11 +58,18 @@ port=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0));
 pid=$!
 
 if ! "$client" "127.0.0.1:$port" --stop-at-step=5 --schedule-file="$change" \
-    --refused-schedule-file="$refused"; then
+    --refused-schedule-file="$refused" > "$out/client.log"; then
     kill "$pid" 2> /dev/null
+    cat "$out/client.log"
     fail "client failed"
 fi
 wait "$pid" || fail "controlled run exited with $?"
+
+# The default change sets the producer's BHP limit and keeps INJ a gas injector.
+if [ "$(basename "$change")" = schedule-change.txt ]; then
+    grep -q "^well PROD .*bhp limit 1500$" "$out/client.log" || fail "PROD BHP limit not reported"
+    grep -q "^well INJ OPEN [A-Z]* GAS," "$out/client.log" || fail "INJ injector type not reported"
+fi
 
 compared=0
 for file in "$out"/reference/*; do
