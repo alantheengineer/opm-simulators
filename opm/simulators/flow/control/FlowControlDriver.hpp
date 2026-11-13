@@ -28,6 +28,7 @@
 #include <opm/input/eclipse/Deck/Deck.hpp>
 #include <opm/input/eclipse/Deck/DeckKeyword.hpp>
 #include <opm/input/eclipse/EclipseState/EclipseState.hpp>
+#include <opm/input/eclipse/EclipseState/IOConfig/IOConfig.hpp>
 #include <opm/input/eclipse/Parser/ErrorGuard.hpp>
 #include <opm/input/eclipse/Parser/InputErrorAction.hpp>
 #include <opm/input/eclipse/Parser/ParseContext.hpp>
@@ -53,6 +54,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <ctime>
+#include <filesystem>
 #include <limits>
 #include <memory>
 #include <numeric>
@@ -413,6 +415,25 @@ public:
         change.wells.assign(update.affected_wells.begin(), update.affected_wells.end());
         std::sort(change.wells.begin(), change.wells.end());
         return change;
+    }
+
+    // Every rank. Saves the state at the current report step to
+    // CASE-LABEL.OPMRST in the output folder. The state is not changed, so a
+    // failure to write is reported as a bad request.
+    Checkpoint saveCheckpoint(const std::string& label)
+    {
+        const auto& ioConfig = main_.getSimulatorPtr()->vanguard().eclState().getIOConfig();
+        Checkpoint checkpoint;
+        checkpoint.file = (std::filesystem::path(ioConfig.getOutputDir())
+                           / (ioConfig.getBaseName() + "-" + label + ".OPMRST"))
+                              .string();
+        checkpoint.reportStep = reportStep();
+        try {
+            main_.getStepDriverPtr()->saveCheckpoint(*main_.getSimTimer(), checkpoint.file);
+        } catch (const std::exception& e) {
+            throw BadRequest(std::string("Cannot save the checkpoint: ") + e.what());
+        }
+        return checkpoint;
     }
 
     // Rank 0 only. Whether the deck asks for the key, or flow evaluates it.

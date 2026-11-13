@@ -41,6 +41,7 @@ enum class CommandKind : int {
     AdvanceTo,
     Abort,
     ApplySchedule,
+    SaveCheckpoint,
     // Issued by the loop itself when the client is gone and the run should
     // carry on to the end.
     FinishSchedule,
@@ -75,7 +76,8 @@ struct Command {
     std::string date;
     std::vector<StopCondition> stops;
     std::string reason;
-    // ApplySchedule: SCHEDULE text, sent to every rank.
+    // ApplySchedule: SCHEDULE text. SaveCheckpoint: the label. Sent to every
+    // rank.
     std::string text;
 };
 
@@ -173,6 +175,11 @@ struct ScheduleChange {
     std::vector<std::string> wells;
 };
 
+struct Checkpoint {
+    std::string file;
+    int reportStep = 0;
+};
+
 struct Reply {
     ErrorCode code = ErrorCode::None;
     std::string message;
@@ -182,6 +189,7 @@ struct Reply {
     WellData wellData;
     SummaryData summary;
     ScheduleChange schedule;
+    Checkpoint checkpoint;
 };
 
 // What to do when no client has called for the idle timeout.

@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
@@ -672,6 +673,28 @@ public:
             return {grpc::StatusCode::INVALID_ARGUMENT, error};
         }
         return applySchedule(*context, text, *out);
+    }
+
+    grpc::Status SaveCheckpoint(grpc::ServerContext* context,
+                                const pb::SaveCheckpointRequest* request,
+                                pb::SaveCheckpointReply* out) override
+    {
+        const auto& label = request->label();
+        const bool valid = !label.empty() && label.size() <= 64
+            && std::all_of(label.begin(), label.end(), [](unsigned char c) {
+                   return std::isalnum(c) != 0 || c == '-' || c == '_';
+               });
+        if (!valid) {
+            return {grpc::StatusCode::INVALID_ARGUMENT,
+                    "A checkpoint label needs 1 to 64 letters, digits, - or _"};
+        }
+        Command command;
+        command.kind = CommandKind::SaveCheckpoint;
+        command.text = label;
+        const Reply reply = submit(context, std::move(command));
+        out->set_file(reply.checkpoint.file);
+        out->set_report_step(reply.checkpoint.reportStep);
+        return toGrpc(reply);
     }
 
     grpc::Status SetWellControl(grpc::ServerContext* context,

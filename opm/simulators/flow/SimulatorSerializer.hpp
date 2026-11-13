@@ -79,6 +79,10 @@ public:
     //! \brief Save data to file if appropriate.
     void save(SimulatorTimer& timer);
 
+    //! \brief Save the state for the next report step to a new file, now.
+    //! \details Throws on every rank if the state cannot be written.
+    void saveTo(SimulatorTimer& timer, const std::string& file);
+
     //! \brief Loads time step info from file.
     void loadTimerInfo(SimulatorTimer& timer);
 
@@ -86,6 +90,9 @@ public:
     void loadState();
 
 private:
+    //! \brief Writes the state. A fresh file is replaced and gets a header.
+    void write_(SimulatorTimer& timer, const std::string& file, bool fresh);
+
     //! \brief Checks for differences between command line parameters.
     void checkSerializedCmdLine(const std::string& current,
                                 const std::string& stored);

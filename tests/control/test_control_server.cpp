@@ -202,6 +202,11 @@ struct FakeDriver {
         return change;
     }
 
+    Checkpoint saveCheckpoint(const std::string& label) const
+    {
+        return {"/out/CASE-" + label + ".OPMRST", current};
+    }
+
     std::string appliedText;
     std::size_t cells = 600000;
     std::chrono::milliseconds stepTime {0};
@@ -942,4 +947,30 @@ BOOST_AUTO_TEST_CASE(WatchdogFiresUnlessStopped)
         const Watchdog watchdog(std::chrono::seconds(30), [&fired] { ++fired; });
     }
     BOOST_CHECK_EQUAL(fired.load(), 1);
+}
+
+BOOST_AUTO_TEST_CASE(SaveCheckpointNamesTheFile)
+{
+    Fixture f;
+    grpc::Status status;
+    step(*f.client, status);
+
+    pb::SaveCheckpointRequest request;
+    request.set_label("after-step_1");
+    pb::SaveCheckpointReply reply;
+    grpc::ClientContext context;
+    BOOST_REQUIRE(f.client->SaveCheckpoint(&context, request, &reply).ok());
+    BOOST_CHECK_EQUAL(reply.file(), "/out/CASE-after-step_1.OPMRST");
+    BOOST_CHECK_EQUAL(reply.report_step(), 1);
+
+    for (const auto& label :
+         std::vector<std::string> {"", "../escape", "a b", std::string(65, 'x')}) {
+        request.set_label(label);
+        grpc::ClientContext refused;
+        BOOST_CHECK_EQUAL(f.client->SaveCheckpoint(&refused, request, &reply).error_code(),
+                          grpc::StatusCode::INVALID_ARGUMENT);
+    }
+
+    BOOST_REQUIRE(shutdown(*f.client).ok());
+    f.exitStatus.get();
 }
