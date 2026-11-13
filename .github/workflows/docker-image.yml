@@ -10,6 +10,7 @@ on:
     paths:
       - docker/**
       - .dockerignore
+      - .github/upstream-pins.env
       - .github/workflows/docker-image.yml
   push:
     branches: [deploy]
@@ -40,16 +41,16 @@ jobs:
 
       # The image fetches its dependencies by ref. Passing commits rather than
       # branch names keeps the layer cache from reusing an old build after a
-      # branch moves.
+      # branch moves. opm-grid is pinned in .github/upstream-pins.env.
       - name: Resolve dependency commits
         id: deps
         run: |
           common=$(git ls-remote "https://github.com/${{ github.repository_owner }}/opm-common.git" refs/heads/deploy | cut -f1)
-          grid=$(git ls-remote https://github.com/OPM/opm-grid.git refs/heads/master | cut -f1)
+          grid=$(sed -n 's/^OPM_GRID_REF=//p' .github/upstream-pins.env)
           test -n "$common" && test -n "$grid"
           echo "common=$common" >> "$GITHUB_OUTPUT"
           echo "grid=$grid" >> "$GITHUB_OUTPUT"
-          echo "opm-common deploy at $common, opm-grid master at $grid"
+          echo "opm-common deploy at $common, opm-grid at $grid"
 
       - name: Build image
         uses: docker/build-push-action@v6

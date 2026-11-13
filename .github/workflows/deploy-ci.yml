@@ -17,9 +17,9 @@ concurrency:
 env:
   CCACHE_DIR: ${{ github.workspace }}/.ccache
   CCACHE_MAXSIZE: 4G
-  # opm-common comes from this account's fork, opm-grid from upstream.
+  # opm-common comes from this account's fork. opm-grid comes from upstream
+  # at the commit in .github/upstream-pins.env.
   OPM_COMMON_REF: ${{ vars.OPM_COMMON_REF || 'deploy' }}
-  OPM_GRID_REF: ${{ vars.OPM_GRID_REF || 'master' }}
   # Only these targets are built; all flow variants would exceed the runner time limit.
   # Targets the build does not define are skipped.
   SIM_TARGETS: flow_brine flow_blackoil flow_energy control_step_client test_control_server
@@ -45,6 +45,8 @@ jobs:
         with:
           path: opm-simulators
           fetch-depth: 0
+      - name: Read upstream pins
+        run: grep -E '^[A-Z_]+=' opm-simulators/.github/upstream-pins.env >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
         with:
           repository: ${{ github.repository_owner }}/opm-common
