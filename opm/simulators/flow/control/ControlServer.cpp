@@ -212,6 +212,57 @@ namespace
         return {};
     }
 
+    // Names in deck records are quoted, so they cannot hold quotes, slashes or
+    // spaces.
+    bool validName(const std::string& name)
+    {
+        return !name.empty() && name.find_first_of("'/ \t\r\n") == std::string::npos;
+    }
+
+    // Writes the WSALT and WTRACER records for an InjectionCompositionRequest.
+    // Empty error if the request is well formed.
+    std::string compositionText(const pb::InjectionCompositionRequest& request, std::string& error)
+    {
+        const auto& well = request.well();
+        if (!validName(well)) {
+            error = "A well name is needed, without quotes, slashes or spaces";
+            return {};
+        }
+        if (!request.has_salt_concentration() && request.tracers().empty()) {
+            error = "Give a salt concentration or at least one tracer";
+            return {};
+        }
+        std::ostringstream text;
+        text << std::setprecision(std::numeric_limits<double>::max_digits10);
+        if (request.has_salt_concentration()) {
+            const double salt = request.salt_concentration();
+            if (!std::isfinite(salt) || salt < 0.0) {
+                error = "Salt concentration must be finite and not negative";
+                return {};
+            }
+            text << "WSALT\n '" << well << "' " << salt << " /\n/\n";
+        }
+        // Sorted, so that the same request always gives the same text.
+        const std::map<std::string, double> tracers(request.tracers().begin(),
+                                                    request.tracers().end());
+        if (!tracers.empty()) {
+            text << "WTRACER\n";
+            for (const auto& [name, concentration] : tracers) {
+                if (!validName(name)) {
+                    error = "Tracer names cannot be empty or hold quotes, slashes or spaces";
+                    return {};
+                }
+                if (!std::isfinite(concentration) || concentration < 0.0) {
+                    error = "Tracer concentrations must be finite and not negative";
+                    return {};
+                }
+                text << " '" << well << "' '" << name << "' " << concentration << " /\n";
+            }
+            text << "/\n";
+        }
+        return text.str();
+    }
+
     // One deck item: the value, or 1* when it is not given.
     std::string item(bool given, double value)
     {
@@ -228,7 +279,7 @@ namespace
     std::string wellControlText(const pb::WellControlRequest& request, std::string& error)
     {
         const auto& well = request.well();
-        if (well.empty() || well.find_first_of("'/ \t\r\n") != std::string::npos) {
+        if (!validName(well)) {
             error = "A well name is needed, without quotes, slashes or spaces";
             return {};
         }
@@ -595,6 +646,18 @@ public:
                                pb::ApplyScheduleReply* out) override
     {
         return applySchedule(*context, request->text(), *out);
+    }
+
+    grpc::Status SetInjectionComposition(grpc::ServerContext* context,
+                                         const pb::InjectionCompositionRequest* request,
+                                         pb::ApplyScheduleReply* out) override
+    {
+        std::string error;
+        const std::string text = compositionText(*request, error);
+        if (!error.empty()) {
+            return {grpc::StatusCode::INVALID_ARGUMENT, error};
+        }
+        return applySchedule(*context, text, *out);
     }
 
     grpc::Status SetWellControl(grpc::ServerContext* context,

@@ -849,3 +849,47 @@ BOOST_AUTO_TEST_CASE(SetWellControlWritesRecords)
     BOOST_REQUIRE(shutdown(*f.client).ok());
     f.exitStatus.get();
 }
+
+BOOST_AUTO_TEST_CASE(SetInjectionCompositionWritesRecords)
+{
+    Fixture f;
+    pb::ApplyScheduleReply reply;
+
+    pb::InjectionCompositionRequest request;
+    request.set_well("INJ");
+    request.set_salt_concentration(15.5);
+    (*request.mutable_tracers())["SEA"] = 1.0;
+    (*request.mutable_tracers())["FW"] = 0.25;
+    grpc::ClientContext context;
+    BOOST_REQUIRE(f.client->SetInjectionComposition(&context, request, &reply).ok());
+    // Tracers in name order, whatever order the map holds them in.
+    BOOST_CHECK_EQUAL(
+        reply.text(),
+        "WSALT\n 'INJ' 15.5 /\n/\nWTRACER\n 'INJ' 'FW' 0.25 /\n 'INJ' 'SEA' 1 /\n/\n");
+    BOOST_CHECK_EQUAL(f.driver.appliedText, reply.text());
+
+    const auto refused = [&f](const pb::InjectionCompositionRequest& r) {
+        grpc::ClientContext c;
+        pb::ApplyScheduleReply out;
+        return f.client->SetInjectionComposition(&c, r, &out).error_code();
+    };
+
+    pb::InjectionCompositionRequest nothing;
+    nothing.set_well("INJ");
+    BOOST_CHECK_EQUAL(refused(nothing), grpc::StatusCode::INVALID_ARGUMENT);
+
+    pb::InjectionCompositionRequest negative = request;
+    negative.set_salt_concentration(-1.0);
+    BOOST_CHECK_EQUAL(refused(negative), grpc::StatusCode::INVALID_ARGUMENT);
+
+    pb::InjectionCompositionRequest badTracer = request;
+    (*badTracer.mutable_tracers())["SEA WATER"] = 1.0;
+    BOOST_CHECK_EQUAL(refused(badTracer), grpc::StatusCode::INVALID_ARGUMENT);
+
+    pb::InjectionCompositionRequest noWell = request;
+    noWell.clear_well();
+    BOOST_CHECK_EQUAL(refused(noWell), grpc::StatusCode::INVALID_ARGUMENT);
+
+    BOOST_REQUIRE(shutdown(*f.client).ok());
+    f.exitStatus.get();
+}

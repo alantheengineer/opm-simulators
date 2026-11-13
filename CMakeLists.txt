@@ -1136,6 +1136,26 @@ macro(opm-simulators_targets_hook)
         ${PROJECT_SOURCE_DIR}/python/test_data/SPE1CASE1a/SPE1CASE1.DATA
         ${PROJECT_BINARY_DIR}/tests/control_schedule
     )
+    add_test(NAME control_tracer_matches_deck
+      COMMAND
+        ${PROJECT_SOURCE_DIR}/tests/control/run-composition-test.sh
+        $<TARGET_FILE:flow_blackoil>
+        $<TARGET_FILE:control_step_client>
+        ${PROJECT_SOURCE_DIR}/python/test_data/SPE1CASE1a/SPE1CASE1.DATA
+        tracer
+        ${PROJECT_BINARY_DIR}/tests/control_tracer
+    )
+    if(TARGET flow_brine)
+      add_test(NAME control_brine_matches_deck
+        COMMAND
+          ${PROJECT_SOURCE_DIR}/tests/control/run-composition-test.sh
+          $<TARGET_FILE:flow_brine>
+          $<TARGET_FILE:control_step_client>
+          ${PROJECT_SOURCE_DIR}/python/test_data/SPE1CASE1a/SPE1CASE1.DATA
+          brine
+          ${PROJECT_BINARY_DIR}/tests/control_brine
+      )
+    endif()
     add_test(NAME control_idle_timeout_finishes
       COMMAND
         ${PROJECT_SOURCE_DIR}/tests/control/run-idle-test.sh

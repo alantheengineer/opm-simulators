@@ -438,15 +438,16 @@ private:
         return static_cast<int>(after - before);
     }
 
-    // Keywords that only change controls, limits and transmissibility
-    // multipliers, which flow reads again at the start of each report step.
+    // Keywords that only change controls, limits, injected composition and
+    // transmissibility multipliers, which flow reads again at the start of
+    // each report step.
     static const std::unordered_set<std::string>& allowedKeywords()
     {
         static const std::unordered_set<std::string> keywords {
             "BOX",      "ENDBOX",   "GCONINJE", "GCONPROD", "GEFAC",  "MULTX",
             "MULTX-",   "MULTY",    "MULTY-",   "MULTZ",    "MULTZ-", "WCONHIST",
             "WCONINJE", "WCONINJH", "WCONPROD", "WECON",    "WEFAC",  "WELOPEN",
-            "WELTARG",  "WINJMULT", "WPIMULT",  "WTMULT",
+            "WELTARG",  "WINJMULT", "WPIMULT",  "WSALT",    "WTMULT", "WTRACER",
         };
         return keywords;
     }

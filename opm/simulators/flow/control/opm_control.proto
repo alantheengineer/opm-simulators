@@ -44,6 +44,9 @@ service Control {
   // Sets the controls of one well by writing a WCONPROD or WCONINJE record
   // for it. Applied as ApplySchedule.
   rpc SetWellControl(WellControlRequest) returns (ApplyScheduleReply);
+  // Sets what an injector injects, by writing WSALT and WTRACER records for
+  // it. Applied as ApplySchedule.
+  rpc SetInjectionComposition(InjectionCompositionRequest) returns (ApplyScheduleReply);
 }
 
 message GetInfoRequest {}
@@ -272,4 +275,13 @@ message WellControlRequest {
   optional double thp = 11;
   // Injector surface rate.
   optional double surface_rate = 12;
+}
+
+// Values are in deck units. Items left out keep their current values.
+message InjectionCompositionRequest {
+  string well = 1;
+  // Salt concentration of the injected water. Needs a model with brine.
+  optional double salt_concentration = 2;
+  // Tracer name to injected concentration.
+  map<string, double> tracers = 3;
 }
