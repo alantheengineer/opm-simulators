@@ -1,10 +1,12 @@
 #!/bin/bash
-# Changes SPE1 under step control at report step 5 and checks that the
-# output matches a deck with the same keywords written at that date. Before
-# the change the client sends a request that must be refused, so a refused
-# request that changed the run would show as a difference.
+# Changes an SPE1 deck under step control at report step 5 and checks that
+# the output matches a deck with the same keywords written at that date.
+# Before the change the client sends a request that must be refused, so a
+# refused request that changed the run would show as a difference.
 #
-# Usage: run-schedule-test.sh FLOW CLIENT DECK OUTPUT_DIR [RANKS]
+# Usage: run-schedule-test.sh FLOW CLIENT DECK OUTPUT_DIR [RANKS [CHANGE [REFUSED]]]
+#
+# CHANGE and REFUSED default to schedule-change.txt and schedule-refused.txt.
 
 set -uo pipefail
 
@@ -14,6 +16,8 @@ deck=$3
 out=$4
 ranks=${5:-1}
 here=$(dirname "$0")
+change=${6:-$here/schedule-change.txt}
+refused=${7:-$here/schedule-refused.txt}
 name=$(basename "$deck" .DATA)
 
 launch=()
@@ -35,7 +39,7 @@ mkdir -p "$out/reference" "$out/control" "$out/deck"
 
 # SPE1 runs ten report steps from one TSTEP record. The reference deck splits
 # it after five and puts the keywords in between.
-python3 - "$deck" "$here/schedule-change.txt" "$out/deck/$name.DATA" <<'PY' || fail "cannot write the reference deck"
+python3 - "$deck" "$change" "$out/deck/$name.DATA" <<'PY' || fail "cannot write the reference deck"
 import sys
 deck, change, target = sys.argv[1:4]
 text = open(deck).read()
@@ -53,8 +57,8 @@ port=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0));
     > "$out/control.log" 2>&1 &
 pid=$!
 
-if ! "$client" "127.0.0.1:$port" --schedule-step=5 --schedule-file="$here/schedule-change.txt" \
-    --refused-schedule-file="$here/schedule-refused.txt"; then
+if ! "$client" "127.0.0.1:$port" --schedule-step=5 --schedule-file="$change" \
+    --refused-schedule-file="$refused"; then
     kill "$pid" 2> /dev/null
     fail "client failed"
 fi
