@@ -302,6 +302,36 @@ updateTUNINGDP(const TuningDp& tuning_dp)
     }
 }
 
+template <class TypeTag>
+void
+SimulatorFullyImplicit<TypeTag>::loadSerializedState_(const SimulatorTimer& timer)
+{
+    wellModel_().prepareDeserialize(serializer_.loadStep() - 1);
+    serializer_.loadState();
+    simulator_.model().invalidateAndUpdateIntensiveQuantities(/*timeIdx=*/0);
+    simulator_.model().rebuildStorageCache(/*timeIdx=*/0);
+    if (simulator_.problem().intensiveQuantityHistorySize() > 1) {
+        simulator_.model().invalidateAndUpdateIntensiveQuantities(/*timeIdx=*/1);
+        simulator_.model().rebuildStorageCache(/*timeIdx=*/1);
+    }
+    wellModel_().beginReportStep(timer.currentStepNum());
+}
+
+template <class TypeTag>
+void
+SimulatorFullyImplicit<TypeTag>::loadCheckpoint(SimulatorTimer& timer)
+{
+    if (!serializer_.shouldLoad()) {
+        return;
+    }
+    // As at the start of runStep, which then has nothing left to load.
+    serializer_.loadTimerInfo(timer);
+    simulator_.startNextEpisode(simulator_.startTime() + schedule().seconds(timer.currentStepNum()),
+                                timer.currentStepLength());
+    simulator_.setEpisodeIndex(timer.currentStepNum());
+    loadSerializedState_(timer);
+}
+
 template<class TypeTag>
 bool
 SimulatorFullyImplicit<TypeTag>::
@@ -348,15 +378,7 @@ runStep(SimulatorTimer& timer)
     simulator_.setEpisodeIndex(timer.currentStepNum());
 
     if (serializer_.shouldLoad()) {
-        wellModel_().prepareDeserialize(serializer_.loadStep() - 1);
-        serializer_.loadState();
-        simulator_.model().invalidateAndUpdateIntensiveQuantities(/*timeIdx=*/0);
-        simulator_.model().rebuildStorageCache(/*timeIdx=*/0);
-        if (simulator_.problem().intensiveQuantityHistorySize() > 1) {
-            simulator_.model().invalidateAndUpdateIntensiveQuantities(/*timeIdx=*/1);
-            simulator_.model().rebuildStorageCache(/*timeIdx=*/1);
-        }
-        wellModel_().beginReportStep(timer.currentStepNum());
+        loadSerializedState_(timer);
     }
 
     // Run a multiple steps of the solver depending on the time step control.

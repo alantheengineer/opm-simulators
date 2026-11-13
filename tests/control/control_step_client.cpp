@@ -254,6 +254,53 @@ writePressure(Client& client, const std::string& path)
     return static_cast<bool>(out);
 }
 
+// Prints the engine and the report step the run starts at.
+std::optional<pb::InfoReply>
+describe(Client& client)
+{
+    pb::InfoReply info;
+    if (!check(client.stub().GetInfo(client.context().get(), pb::GetInfoRequest {}, &info),
+               "GetInfo")) {
+        return std::nullopt;
+    }
+    std::cout << "engine " << info.engine_version() << ", ranks " << info.ranks() << ", threads "
+              << info.threads_per_rank() << ", active cells " << info.active_cells() << '\n';
+
+    pb::StatusReply status;
+    if (!check(client.stub().GetStatus(client.context().get(), pb::GetStatusRequest {}, &status),
+               "GetStatus")) {
+        return std::nullopt;
+    }
+    std::cout << "starting at report step " << status.report_step() << '\n';
+    return info;
+}
+
+// Steps one report step at a time to the end. Reports the time spent in Step
+// calls beyond the step itself, which is what a call costs the run.
+bool
+stepToEnd(Client& client, pb::StatusReply& status)
+{
+    std::chrono::duration<double> callTime {0};
+    double stepTime = 0;
+    int calls = 0;
+    while (status.state() == pb::STATE_STEPPING) {
+        const auto start = std::chrono::steady_clock::now();
+        if (!check(client.stub().Step(client.context().get(), pb::StepRequest {}, &status),
+                   "Step")) {
+            return false;
+        }
+        callTime += std::chrono::steady_clock::now() - start;
+        stepTime += status.last_step_wall_seconds();
+        ++calls;
+        printStep(status);
+    }
+    if (calls > 0) {
+        std::cout << "Step call overhead " << 1000 * (callTime.count() - stepTime) / calls
+                  << " ms per call over " << calls << " calls\n";
+    }
+    return true;
+}
+
 struct Options {
     std::string endpoint;
     std::string token;
@@ -322,19 +369,16 @@ main(int argc, char** argv)
         return EXIT_FAILURE;
     }
 
-    pb::InfoReply info;
-    if (!check(client.stub().GetInfo(client.context().get(), pb::GetInfoRequest {}, &info),
-               "GetInfo")) {
+    const auto info = describe(client);
+    if (!info) {
         return EXIT_FAILURE;
     }
-    std::cout << "engine " << info.engine_version() << ", ranks " << info.ranks() << ", threads "
-              << info.threads_per_rank() << ", active cells " << info.active_cells() << '\n';
 
     // By default the first half with AdvanceTo and the rest one Step at a
     // time, so that both paths are covered.
     pb::StatusReply status;
     pb::AdvanceRequest advance;
-    const int lastStep = info.report_dates_size() - 1;
+    const int lastStep = info->report_dates_size() - 1;
     if (stopAtStep < 0) {
         advance.set_report_step(lastStep);
     } else {
@@ -360,25 +404,8 @@ main(int argc, char** argv)
         return EXIT_FAILURE;
     }
 
-    // Time spent in Step calls beyond the step itself, which is what a call
-    // costs the run.
-    std::chrono::duration<double> callTime {0};
-    double stepTime = 0;
-    int calls = 0;
-    while (status.state() == pb::STATE_STEPPING) {
-        const auto start = std::chrono::steady_clock::now();
-        if (!check(client.stub().Step(client.context().get(), pb::StepRequest {}, &status),
-                   "Step")) {
-            return EXIT_FAILURE;
-        }
-        callTime += std::chrono::steady_clock::now() - start;
-        stepTime += status.last_step_wall_seconds();
-        ++calls;
-        printStep(status);
-    }
-    if (calls > 0) {
-        std::cout << "Step call overhead " << 1000 * (callTime.count() - stepTime) / calls
-                  << " ms per call over " << calls << " calls\n";
+    if (!stepToEnd(client, status)) {
+        return EXIT_FAILURE;
     }
 
     if (!printWells(client) || !printOilRate(client)) {
