@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Write an SPE1 variant for the composition tests.
+"""Write an SPE1 variant for the control tests.
 
 Usage: make-deck.py VARIANT SPE1_DECK TARGET
 
-Each variant turns INJ into a water injector. brine adds BRINE, water
+idle adds a well, IDLE, that is never given a control, so it reports no
+control mode.
+
+The other variants turn INJ into a water injector. brine adds BRINE, water
 properties that depend on salt (PVTWSALT) and an initial salt
 concentration. tracer adds one water tracer, SEA, starting at zero.
 thermal adds THERMAL, rock and fluid heat properties, a uniform initial
@@ -62,10 +65,28 @@ def thermal(text):
     return replace_once(text, "\nTSTEP\n", "\nWTEMP\n 'INJ' 200 /\n/\n\nTSTEP\n")
 
 
+def idle(text):
+    text = replace_once(text, "\n   2 1 1 2 /\n", "\n   3 1 1 3 /\n")
+    text = replace_once(
+        text,
+        "\n/\n-- Coordinates in item 3-4",
+        "\n\t'IDLE'\t  'G1'\t   5\t  5\t   8400\t       'OIL' /\n/\n-- Coordinates in item 3-4",
+    )
+    return replace_once(
+        text,
+        "\n/\n-- Coordinates in item 2-5",
+        "\n\t'IDLE'\t 5\t   5\t 3\t   3\t    'OPEN'\t    1*    1*      0.5 /\n/\n-- Coordinates in item 2-5",
+    )
+
+
 def main():
     variant, source, target = sys.argv[1:4]
-    text = water_injector(open(source).read())
-    text = {"brine": brine, "tracer": tracer, "thermal": thermal}[variant](text)
+    text = open(source).read()
+    if variant == "idle":
+        text = idle(text)
+    else:
+        text = water_injector(text)
+        text = {"brine": brine, "tracer": tracer, "thermal": thermal}[variant](text)
     open(target, "w").write(text)
 
 

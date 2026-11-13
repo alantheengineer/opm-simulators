@@ -38,9 +38,10 @@
 
 // Steps a flow run under control to the end of its schedule, reads the wells,
 // the field oil rate and the final pressure, then finishes and shuts it down.
-// Used by the control tests.
+// Used by the control tests and the benchmark. --stop-at-step=1 steps every
+// report step with Step; --stop-at-step=end runs one AdvanceTo to the end.
 //
-// Usage: control_step_client ENDPOINT [--token-file=PATH] [--tls-ca=PATH] [--pressure-file=PATH]
+// Usage: see parseOptions.
 
 namespace
 {
@@ -70,10 +71,21 @@ class Client
 {
 public:
     Client(const std::string& endpoint, std::string token, const std::string& tlsCa)
-        : channel_(grpc::CreateChannel(endpoint, credentials(tlsCa)))
+        : channel_(grpc::CreateCustomChannel(endpoint, credentials(tlsCa), arguments()))
         , stub_(pb::Control::NewStub(channel_))
         , token_(std::move(token))
     {
+    }
+
+    // flow may not be listening yet when the client starts. The default
+    // reconnect backoff of a second would then delay the first call.
+    static grpc::ChannelArguments arguments()
+    {
+        grpc::ChannelArguments result;
+        result.SetInt(GRPC_ARG_INITIAL_RECONNECT_BACKOFF_MS, 50);
+        result.SetInt(GRPC_ARG_MIN_RECONNECT_BACKOFF_MS, 50);
+        result.SetInt(GRPC_ARG_MAX_RECONNECT_BACKOFF_MS, 500);
+        return result;
     }
 
     // TLS when a CA certificate is given.
@@ -258,8 +270,8 @@ parseOptions(int argc, char** argv)
     if (argc < 2) {
         std::cerr << "Usage: control_step_client ENDPOINT [--token-file=PATH] [--tls-ca=PATH] "
                      "[--pressure-file=PATH]\n"
-                     "           [--schedule-file=PATH --stop-at-step=N "
-                     "[--refused-schedule-file=PATH]]\n";
+                     "           [--stop-at-step=N|end] [--checkpoint-label=LABEL]\n"
+                     "           [--schedule-file=PATH [--refused-schedule-file=PATH]]\n";
         return std::nullopt;
     }
     Options options;
@@ -279,7 +291,8 @@ parseOptions(int argc, char** argv)
         } else if (arg.starts_with("--refused-schedule-file=")) {
             options.refusedFile = arg.substr(24);
         } else if (arg.starts_with("--stop-at-step=")) {
-            options.stopAtStep = std::stoi(std::string(arg.substr(15)));
+            const auto step = arg.substr(15);
+            options.stopAtStep = step == "end" ? -1 : std::stoi(std::string(step));
         } else {
             std::cerr << "Unknown option " << arg << '\n';
             return std::nullopt;
@@ -316,12 +329,16 @@ main(int argc, char** argv)
     std::cout << "engine " << info.engine_version() << ", ranks " << info.ranks() << ", threads "
               << info.threads_per_rank() << ", active cells " << info.active_cells() << '\n';
 
-    // The first half with AdvanceTo, the rest one Step at a time, so that
-    // both paths are covered.
+    // By default the first half with AdvanceTo and the rest one Step at a
+    // time, so that both paths are covered.
     pb::StatusReply status;
     pb::AdvanceRequest advance;
-    advance.set_report_step(stopAtStep > 0 ? stopAtStep
-                                           : std::max(1, info.report_dates_size() / 2));
+    const int lastStep = info.report_dates_size() - 1;
+    if (stopAtStep < 0) {
+        advance.set_report_step(lastStep);
+    } else {
+        advance.set_report_step(stopAtStep > 0 ? stopAtStep : std::max(1, lastStep / 2));
+    }
     auto advanceContext = client.context();
     auto reader = client.stub().AdvanceTo(advanceContext.get(), advance);
     while (reader->Read(&status)) {
@@ -342,12 +359,25 @@ main(int argc, char** argv)
         return EXIT_FAILURE;
     }
 
+    // Time spent in Step calls beyond the step itself, which is what a call
+    // costs the run.
+    std::chrono::duration<double> callTime {0};
+    double stepTime = 0;
+    int calls = 0;
     while (status.state() == pb::STATE_STEPPING) {
+        const auto start = std::chrono::steady_clock::now();
         if (!check(client.stub().Step(client.context().get(), pb::StepRequest {}, &status),
                    "Step")) {
             return EXIT_FAILURE;
         }
+        callTime += std::chrono::steady_clock::now() - start;
+        stepTime += status.last_step_wall_seconds();
+        ++calls;
         printStep(status);
+    }
+    if (calls > 0) {
+        std::cout << "Step call overhead " << 1000 * (callTime.count() - stepTime) / calls
+                  << " ms per call over " << calls << " calls\n";
     }
 
     if (!printWells(client) || !printOilRate(client)) {
