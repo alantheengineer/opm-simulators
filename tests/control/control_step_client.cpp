@@ -40,7 +40,7 @@
 // the field oil rate and the final pressure, then finishes and shuts it down.
 // Used by the control tests.
 //
-// Usage: control_step_client ENDPOINT [--token-file=PATH] [--pressure-file=PATH]
+// Usage: control_step_client ENDPOINT [--token-file=PATH] [--tls-ca=PATH] [--pressure-file=PATH]
 
 namespace
 {
@@ -69,11 +69,22 @@ check(const grpc::Status& status, const char* what)
 class Client
 {
 public:
-    Client(const std::string& endpoint, std::string token)
-        : channel_(grpc::CreateChannel(endpoint, grpc::InsecureChannelCredentials()))
+    Client(const std::string& endpoint, std::string token, const std::string& tlsCa)
+        : channel_(grpc::CreateChannel(endpoint, credentials(tlsCa)))
         , stub_(pb::Control::NewStub(channel_))
         , token_(std::move(token))
     {
+    }
+
+    // TLS when a CA certificate is given.
+    static std::shared_ptr<grpc::ChannelCredentials> credentials(const std::string& tlsCa)
+    {
+        if (tlsCa.empty()) {
+            return grpc::InsecureChannelCredentials();
+        }
+        grpc::SslCredentialsOptions ssl;
+        ssl.pem_root_certs = tlsCa;
+        return grpc::SslCredentials(ssl);
     }
 
     bool connect()
@@ -218,6 +229,7 @@ writePressure(Client& client, const std::string& path)
 struct Options {
     std::string endpoint;
     std::string token;
+    std::string tlsCa;
     std::string pressureFile;
     std::string scheduleFile;
     std::string refusedFile;
@@ -228,10 +240,10 @@ std::optional<Options>
 parseOptions(int argc, char** argv)
 {
     if (argc < 2) {
-        std::cerr
-            << "Usage: control_step_client ENDPOINT [--token-file=PATH] [--pressure-file=PATH]\n"
-               "           [--schedule-file=PATH --schedule-step=N "
-               "[--refused-schedule-file=PATH]]\n";
+        std::cerr << "Usage: control_step_client ENDPOINT [--token-file=PATH] [--tls-ca=PATH] "
+                     "[--pressure-file=PATH]\n"
+                     "           [--schedule-file=PATH --schedule-step=N "
+                     "[--refused-schedule-file=PATH]]\n";
         return std::nullopt;
     }
     Options options;
@@ -240,6 +252,8 @@ parseOptions(int argc, char** argv)
         const std::string_view arg = argv[i];
         if (arg.starts_with("--token-file=")) {
             options.token = readToken(std::string(arg.substr(13)));
+        } else if (arg.starts_with("--tls-ca=")) {
+            options.tlsCa = readFile(std::string(arg.substr(9)));
         } else if (arg.starts_with("--pressure-file=")) {
             options.pressureFile = arg.substr(16);
         } else if (arg.starts_with("--schedule-file=")) {
@@ -270,7 +284,7 @@ main(int argc, char** argv)
     const int scheduleStep = options->scheduleStep;
     const std::string& pressureFile = options->pressureFile;
 
-    Client client(options->endpoint, options->token);
+    Client client(options->endpoint, options->token, options->tlsCa);
     if (!client.connect()) {
         std::cerr << "Cannot connect to " << options->endpoint << '\n';
         return EXIT_FAILURE;

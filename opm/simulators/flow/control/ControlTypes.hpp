@@ -41,6 +41,9 @@ enum class CommandKind : int {
     AdvanceTo,
     Abort,
     ApplySchedule,
+    // Issued by the loop itself when the client is gone and the run should
+    // carry on to the end.
+    FinishSchedule,
 };
 
 // Cells to return from GetCellData. All active cells when empty.
@@ -181,10 +184,24 @@ struct Reply {
     ScheduleChange schedule;
 };
 
+// What to do when no client has called for the idle timeout.
+enum class OnDisconnect : int {
+    // Write the output so far and exit.
+    Pause,
+    // Run the rest of the schedule, then exit.
+    Finish,
+    // Exit with a non-zero code, without the final output.
+    Abort,
+};
+
 struct Options {
     std::string endpoint;
     std::string token;
     std::chrono::seconds idleTimeout {900};
+    OnDisconnect onDisconnect = OnDisconnect::Pause;
+    // PEM contents. TLS is used when both are set.
+    std::string tlsCertificate;
+    std::string tlsKey;
 };
 
 } // namespace Opm::Control

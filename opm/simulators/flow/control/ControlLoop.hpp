@@ -24,12 +24,14 @@
 
 #include <opm/simulators/flow/control/ControlServer.hpp>
 #include <opm/simulators/flow/control/ControlTypes.hpp>
+#include <opm/simulators/flow/control/Watchdog.hpp>
 
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstdlib>
 #include <exception>
+#include <iostream>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -292,6 +294,18 @@ namespace detail
                 status.state = State::Finished;
             }
             break;
+        case CommandKind::FinishSchedule:
+            while (canStep(status.state)) {
+                runStep(driver, status);
+                if (server) {
+                    server->publishStatus(status);
+                }
+            }
+            if (canFinish(status.state)) {
+                exitStatus = driver.finish();
+                status.state = State::Finished;
+            }
+            break;
         case CommandKind::Abort:
             status.state = State::Failed;
             status.error = command.reason.empty() ? "Aborted" : "Aborted: " + command.reason;
@@ -301,10 +315,11 @@ namespace detail
         return reply;
     }
 
-    // Waits for a command on rank 0 and broadcasts it. Shutdown after the idle
-    // timeout.
+    // Waits for a command on rank 0 and broadcasts it. After the idle timeout
+    // the command follows the disconnect policy.
     template <class Comm>
-    Command receive(ControlServer* server, const Comm& comm, bool& timedOut)
+    Command
+    receive(ControlServer* server, const Comm& comm, OnDisconnect onDisconnect, bool& timedOut)
     {
         Command command;
         timedOut = false;
@@ -313,6 +328,11 @@ namespace detail
             timedOut = !received.has_value();
             if (received) {
                 command = std::move(*received);
+            } else if (onDisconnect == OnDisconnect::Finish) {
+                command.kind = CommandKind::FinishSchedule;
+            } else if (onDisconnect == OnDisconnect::Abort) {
+                command.kind = CommandKind::Abort;
+                command.reason = "No command within the idle timeout";
             }
         }
         int kind = static_cast<int>(command.kind);
@@ -339,7 +359,8 @@ namespace detail
                             ControlServer* server,
                             const Info& info,
                             Status& status,
-                            int& exitStatus)
+                            int& exitStatus,
+                            std::chrono::milliseconds failureTimeout)
     {
         Reply reply;
         std::string error;
@@ -361,7 +382,21 @@ namespace detail
             error = "Unknown error";
         }
 
-        if (comm.max(failed ? 1 : 0) != 0) {
+        // A failure on some ranks only can leave the others waiting in MPI for
+        // ranks that have stopped. If the ranks cannot agree in time, end this
+        // process so that the MPI launcher ends the rest.
+        bool anyFailed = false;
+        if (failed) {
+            Watchdog watchdog(failureTimeout, [&error] {
+                std::cerr << "Step control: ranks did not agree on a failure in time: " << error
+                          << std::endl;
+                std::_Exit(EXIT_FAILURE);
+            });
+            anyFailed = comm.max(1) != 0;
+        } else {
+            anyFailed = comm.max(0) != 0;
+        }
+        if (anyFailed) {
             status.state = State::Failed;
             status.error = failed ? error : "Failure on another rank";
             reply.code = ErrorCode::Internal;
@@ -423,7 +458,11 @@ startControlServer(const Options& options, const Comm& comm)
 // Comm must provide rank(), broadcast(T*, int, int) and max(int).
 template <class Driver, class Comm>
 int
-runControlLoop(Driver& driver, const Comm& comm, ControlServer* server)
+runControlLoop(Driver& driver,
+               const Comm& comm,
+               ControlServer* server,
+               OnDisconnect onDisconnect = OnDisconnect::Pause,
+               std::chrono::milliseconds failureTimeout = std::chrono::seconds(30))
 {
     const Info info = driver.info();
 
@@ -437,16 +476,17 @@ runControlLoop(Driver& driver, const Comm& comm, ControlServer* server)
     int exitStatus = EXIT_SUCCESS;
     for (;;) {
         bool timedOut = false;
-        const Command command = detail::receive(server, comm, timedOut);
-        Reply reply
-            = detail::executeOnAllRanks(command, driver, comm, server, info, status, exitStatus);
+        const Command command = detail::receive(server, comm, onDisconnect, timedOut);
+        Reply reply = detail::executeOnAllRanks(
+            command, driver, comm, server, info, status, exitStatus, failureTimeout);
         if (server) {
             server->publishStatus(status);
             if (!timedOut) {
                 server->reply(std::move(reply));
             }
         }
-        if (command.kind == CommandKind::Shutdown || command.kind == CommandKind::Abort) {
+        if (command.kind == CommandKind::Shutdown || command.kind == CommandKind::Abort
+            || command.kind == CommandKind::FinishSchedule) {
             break;
         }
         // Abort during a command ends the run once that command is done.

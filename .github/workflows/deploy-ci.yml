@@ -24,7 +24,7 @@ env:
   # Targets the build does not define are skipped.
   SIM_TARGETS: flow_brine flow_blackoil flow_energy control_step_client test_control_server
   # ctest names to run.
-  SIM_TESTS: control_server control_matches_normal_run control_matches_normal_run_2ranks control_idle_timeout_finishes control_schedule_matches_deck control_schedule_matches_deck_2ranks control_tracer_matches_deck control_brine_matches_deck control_thermal_matches_deck
+  SIM_TESTS: control_server control_matches_normal_run control_matches_normal_run_2ranks control_idle_timeout_finishes control_schedule_matches_deck control_schedule_matches_deck_2ranks control_tracer_matches_deck control_brine_matches_deck control_thermal_matches_deck control_on_disconnect_finish control_on_disconnect_abort control_over_tls
 
 jobs:
   format:
