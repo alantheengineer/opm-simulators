@@ -17,18 +17,20 @@ concurrency:
 env:
   CCACHE_DIR: ${{ github.workspace }}/.ccache
   CCACHE_MAXSIZE: 4G
-  # opm-common comes from this account's fork, opm-grid from upstream.
+  # opm-common comes from this account's fork. opm-grid comes from upstream
+  # at the commit in .github/upstream-pins.env.
   OPM_COMMON_REF: ${{ vars.OPM_COMMON_REF || 'deploy' }}
-  OPM_GRID_REF: ${{ vars.OPM_GRID_REF || 'master' }}
   # Only these targets are built; all flow variants would exceed the runner time limit.
   # Targets the build does not define are skipped.
   SIM_TARGETS: flow_brine flow_blackoil flow_energy control_step_client test_control_server
   # ctest names to run.
   SIM_TESTS: control_server control_matches_normal_run control_matches_normal_run_2ranks control_idle_timeout_finishes control_schedule_matches_deck control_schedule_matches_deck_2ranks control_tracer_matches_deck control_brine_matches_deck control_thermal_matches_deck control_on_disconnect_finish control_on_disconnect_abort control_over_tls control_checkpoint_resumes control_reports_idle_well
 
+# Pull requests from sync/ branches bring in OPM's code, which the style
+# checks were not written for, so they skip them and keep the build and tests.
 jobs:
   format:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && !startsWith(github.head_ref, 'sync/')
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -45,10 +47,26 @@ jobs:
         with:
           path: opm-simulators
           fetch-depth: 0
+      - name: Read upstream pins
+        run: grep -E '^[A-Z_]+=' opm-simulators/.github/upstream-pins.env >> "$GITHUB_ENV"
+      # A sync pull request builds against opm-common's sync branch of the
+      # same name, so changes OPM made in both repositories meet.
+      - name: Choose the opm-common branch
+        id: common
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          ref=$OPM_COMMON_REF
+          if [[ $HEAD_REF == sync/* ]] && git ls-remote --exit-code \
+              "https://github.com/${{ github.repository_owner }}/opm-common.git" "refs/heads/$HEAD_REF" > /dev/null; then
+            ref=$HEAD_REF
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "opm-common at $ref"
       - uses: actions/checkout@v4
         with:
           repository: ${{ github.repository_owner }}/opm-common
-          ref: ${{ env.OPM_COMMON_REF }}
+          ref: ${{ steps.common.outputs.ref }}
           path: opm-common
       - uses: actions/checkout@v4
         with:
@@ -84,7 +102,7 @@ jobs:
             -DOPM_ENABLE_CONTROL_SERVER=ON \
             -Dopm-common_DIR="$PWD/build/common" -Dopm-grid_DIR="$PWD/build/grid"
       - name: Strict warnings and clang-tidy on changed sources
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && !startsWith(github.head_ref, 'sync/')
         working-directory: opm-simulators
         run: |
           # Generated gRPC headers are needed before the changed sources can be checked.

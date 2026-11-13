@@ -1,0 +1,37 @@
+name: upstream-sync
+
+# Every Monday, moves master in opm-common and opm-simulators to OPM's master
+# and opens pull requests that merge it into deploy. See
+# .github/scripts/upstream-sync.sh. Run it by hand to sync now.
+#
+# Needs a SYNC_TOKEN secret: a fine-grained token for both forks with
+# Contents, Pull requests and Workflows set to read and write. The schedule
+# only runs when this file is on the default branch.
+
+on:
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upstream-sync
+
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Sync
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::Add the SYNC_TOKEN secret described at the top of this workflow."
+            exit 1
+          fi
+          .github/scripts/upstream-sync.sh
