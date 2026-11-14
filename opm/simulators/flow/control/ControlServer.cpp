@@ -466,6 +466,9 @@ public:
 
         grpc::ServerBuilder builder;
         builder.SetResourceQuota(quota);
+        // gRPC shares ports by default, so a second simulator on the same port
+        // would take some of this one's connections.
+        builder.AddChannelArgument(GRPC_ARG_ALLOW_REUSEPORT, 0);
         builder.SetSyncServerOption(grpc::ServerBuilder::SyncServerOption::NUM_CQS, 1);
         builder.SetSyncServerOption(grpc::ServerBuilder::SyncServerOption::MIN_POLLERS, 1);
         builder.SetSyncServerOption(grpc::ServerBuilder::SyncServerOption::MAX_POLLERS, 2);
