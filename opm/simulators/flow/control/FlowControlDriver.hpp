@@ -37,7 +37,9 @@
 #include <opm/input/eclipse/Schedule/Schedule.hpp>
 #include <opm/input/eclipse/Schedule/ScheduleTypes.hpp>
 #include <opm/input/eclipse/Schedule/SummaryState.hpp>
+#include <opm/input/eclipse/Schedule/Well/Connection.hpp>
 #include <opm/input/eclipse/Schedule/Well/Well.hpp>
+#include <opm/input/eclipse/Schedule/Well/WellConnections.hpp>
 #include <opm/input/eclipse/Schedule/Well/WellEnums.hpp>
 #include <opm/input/eclipse/Schedule/Well/WellInjectionControls.hpp>
 #include <opm/input/eclipse/Schedule/Well/WellProductionControls.hpp>
@@ -59,6 +61,7 @@
 #include <cstdint>
 #include <ctime>
 #include <filesystem>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <numeric>
@@ -113,7 +116,24 @@ class FlowControlDriver
         Porv,
         PermX,
         PermY,
-        PermZ
+        PermZ,
+        Depth,
+        KrWat,
+        KrOil,
+        KrGas,
+        ViscWat,
+        ViscOil,
+        ViscGas,
+        DenWat,
+        DenOil,
+        DenGas,
+        Bw,
+        Bo,
+        Bg,
+        CompWat,
+        CompOil,
+        CompGas,
+        CompRock
     };
 
     struct FieldInfo {
@@ -121,9 +141,11 @@ class FlowControlDriver
         Field field;
         Measure measure;
         std::string_view siUnit;
+        // Per unit of pressure, so converted with the inverse of the pressure unit.
+        bool perPressure = false;
     };
 
-    static constexpr std::array<FieldInfo, 13> fields_ {{
+    static constexpr std::array<FieldInfo, 30> fields_ {{
         {"PRESSURE", Field::Pressure, Measure::pressure, "PA"},
         {"SWAT", Field::Swat, Measure::identity, ""},
         {"SGAS", Field::Sgas, Measure::identity, ""},
@@ -137,6 +159,23 @@ class FlowControlDriver
         {"PERMX", Field::PermX, Measure::permeability, "M2"},
         {"PERMY", Field::PermY, Measure::permeability, "M2"},
         {"PERMZ", Field::PermZ, Measure::permeability, "M2"},
+        {"DEPTH", Field::Depth, Measure::length, "M"},
+        {"WATKR", Field::KrWat, Measure::identity, ""},
+        {"OILKR", Field::KrOil, Measure::identity, ""},
+        {"GASKR", Field::KrGas, Measure::identity, ""},
+        {"WAT_VISC", Field::ViscWat, Measure::viscosity, "PA*S"},
+        {"OIL_VISC", Field::ViscOil, Measure::viscosity, "PA*S"},
+        {"GAS_VISC", Field::ViscGas, Measure::viscosity, "PA*S"},
+        {"WAT_DEN", Field::DenWat, Measure::density, "KG/M3"},
+        {"OIL_DEN", Field::DenOil, Measure::density, "KG/M3"},
+        {"GAS_DEN", Field::DenGas, Measure::density, "KG/M3"},
+        {"BW", Field::Bw, Measure::water_formation_volume_factor, "RM3/SM3"},
+        {"BO", Field::Bo, Measure::oil_formation_volume_factor, "RM3/SM3"},
+        {"BG", Field::Bg, Measure::gas_formation_volume_factor, "RM3/SM3"},
+        {"WAT_COMP", Field::CompWat, Measure::pressure, "1/PA", true},
+        {"OIL_COMP", Field::CompOil, Measure::pressure, "1/PA", true},
+        {"GAS_COMP", Field::CompGas, Measure::pressure, "1/PA", true},
+        {"ROCK_COMP", Field::CompRock, Measure::pressure, "1/PA", true},
     }};
 
 public:
@@ -271,6 +310,12 @@ public:
             field.name = info->name;
             if (siUnits) {
                 field.unit = info->siUnit;
+            } else if (info->perPressure) {
+                const double perUnit = units.from_si(Measure::pressure, 1.0);
+                for (auto& value : values) {
+                    value /= perUnit;
+                }
+                field.unit = "1/" + std::string(units.name(Measure::pressure));
             } else {
                 for (auto& value : values) {
                     value = units.from_si(info->measure, value);
@@ -287,7 +332,7 @@ public:
     }
 
     // Rank 0 only; the other ranks return nothing.
-    WellData wellData(const std::vector<std::string>& names)
+    WellData wellData(const std::vector<std::string>& names, bool withConnections)
     {
         auto& simulator = *main_.getSimulatorPtr();
         if (simulator.vanguard().grid().comm().rank() != 0) {
@@ -322,6 +367,12 @@ public:
         data.pressureUnit = units.name(Measure::pressure);
         data.temperatureUnit = units.name(Measure::temperature);
         data.saltRateUnit = units.name(Measure::mass_rate);
+        data.transmissibilityUnit = units.name(Measure::transmissibility);
+        data.khUnit = units.name(Measure::effective_Kh);
+        data.lengthUnit = units.name(Measure::length);
+        data.reservoirRateUnit = units.name(Measure::rate);
+        data.liquidProductivityIndexUnit = units.name(Measure::liquid_productivity_index);
+        data.gasProductivityIndexUnit = units.name(Measure::gas_productivity_index);
         for (const auto& name : wellNames) {
             const bool wanted
                 = names.empty() || std::any_of(names.begin(), names.end(), [&name](const auto& p) {
@@ -349,6 +400,10 @@ public:
             // Before the first step there is no solution, and the deck says
             // how the well starts.
             const auto it = wells.find(name);
+            if (withConnections) {
+                values.connections
+                    = connectionValues(deckWell, it == wells.end() ? nullptr : &it->second, units);
+            }
             if (it == wells.end()) {
                 data.wells.push_back(std::move(values));
                 continue;
@@ -503,6 +558,60 @@ private:
         return control.isProducer ? modeName(control.prod) : modeName(control.inj);
     }
 
+    // A well's connections in deck order, with the last step's values when
+    // there is a solution. Rank 0.
+    std::vector<ConnectionValues> connectionValues(const Well& deckWell,
+                                                   const data::Well* solution,
+                                                   const UnitSystem& units) const
+    {
+        using Rate = data::Rates::opt;
+        std::vector<ConnectionValues> out;
+        for (const auto& connection : deckWell.getConnections()) {
+            ConnectionValues values;
+            values.i = connection.getI() + 1;
+            values.j = connection.getJ() + 1;
+            values.k = connection.getK() + 1;
+            values.cell = activeIndex(connection.global_index());
+            values.status = Connection::State2String(connection.state());
+            values.connectionFactor = units.from_si(Measure::transmissibility, connection.CF());
+            values.kh = units.from_si(Measure::effective_Kh, connection.Kh());
+            values.depth = units.from_si(Measure::length, connection.depth());
+            const auto* dynamic = solution != nullptr
+                ? solution->find_connection(connection.global_index())
+                : nullptr;
+            if (dynamic != nullptr) {
+                const auto& rates = dynamic->rates;
+                values.pressure = units.from_si(Measure::pressure, dynamic->pressure);
+                values.oilRate
+                    = units.from_si(Measure::liquid_surface_rate, rates.get(Rate::oil, 0.0));
+                values.waterRate
+                    = units.from_si(Measure::liquid_surface_rate, rates.get(Rate::wat, 0.0));
+                values.gasRate
+                    = units.from_si(Measure::gas_surface_rate, rates.get(Rate::gas, 0.0));
+                values.reservoirRate = units.from_si(Measure::rate, dynamic->reservoir_rate);
+                values.productivityIndexOil
+                    = units.from_si(Measure::liquid_productivity_index,
+                                    rates.get(Rate::productivity_index_oil, 0.0));
+                values.productivityIndexWater
+                    = units.from_si(Measure::liquid_productivity_index,
+                                    rates.get(Rate::productivity_index_water, 0.0));
+                values.productivityIndexGas = units.from_si(
+                    Measure::gas_productivity_index, rates.get(Rate::productivity_index_gas, 0.0));
+            }
+            out.push_back(std::move(values));
+        }
+        return out;
+    }
+
+    // Active index of a Cartesian cell index, or -1 for an inactive cell.
+    // Rank 0.
+    std::int64_t activeIndex(std::size_t cartesian) const
+    {
+        const auto c = static_cast<int>(cartesian);
+        const auto it = std::lower_bound(cartesianOf_.begin(), cartesianOf_.end(), c);
+        return it != cartesianOf_.end() && *it == c ? std::distance(cartesianOf_.begin(), it) : -1;
+    }
+
     static int difference(unsigned int after, unsigned int before)
     {
         return static_cast<int>(after - before);
@@ -584,10 +693,25 @@ private:
     {
         switch (field) {
         case Field::Swat:
+        case Field::KrWat:
+        case Field::ViscWat:
+        case Field::DenWat:
+        case Field::Bw:
+        case Field::CompWat:
             return phase(FluidSystem::waterPhaseIdx);
         case Field::Sgas:
+        case Field::KrGas:
+        case Field::ViscGas:
+        case Field::DenGas:
+        case Field::Bg:
+        case Field::CompGas:
             return phase(FluidSystem::gasPhaseIdx);
         case Field::Soil:
+        case Field::KrOil:
+        case Field::ViscOil:
+        case Field::DenOil:
+        case Field::Bo:
+        case Field::CompOil:
             return phase(FluidSystem::oilPhaseIdx);
         case Field::Rs:
         case Field::Rv:
@@ -614,6 +738,10 @@ private:
             return problem.intrinsicPermeability(cell)[1][1];
         case Field::PermZ:
             return problem.intrinsicPermeability(cell)[2][2];
+        case Field::Depth:
+            return simulator.vanguard().cellCenterDepth(cell);
+        case Field::CompRock:
+            return problem.rockCompressibility(cell);
         default:
             break;
         }
@@ -651,8 +779,80 @@ private:
             }
             return std::nullopt;
         default:
+            break;
+        }
+
+        const auto index = phaseOf(field);
+        switch (field) {
+        case Field::KrWat:
+        case Field::KrOil:
+        case Field::KrGas:
+            return getValue(quantities->relativePermeability(index));
+        case Field::ViscWat:
+        case Field::ViscOil:
+        case Field::ViscGas:
+            return getValue(fs.viscosity(index));
+        case Field::DenWat:
+        case Field::DenOil:
+        case Field::DenGas:
+            return getValue(fs.density(index));
+        case Field::Bw:
+        case Field::Bo:
+        case Field::Bg:
+            return 1.0 / getValue(fs.invB(index));
+        case Field::CompWat:
+        case Field::CompOil:
+        case Field::CompGas:
+            return compressibility(fs, index);
+        default:
             return std::nullopt;
         }
+    }
+
+    static unsigned phaseOf(Field field)
+    {
+        switch (field) {
+        case Field::KrWat:
+        case Field::ViscWat:
+        case Field::DenWat:
+        case Field::Bw:
+        case Field::CompWat:
+            return FluidSystem::waterPhaseIdx;
+        case Field::KrGas:
+        case Field::ViscGas:
+        case Field::DenGas:
+        case Field::Bg:
+        case Field::CompGas:
+            return FluidSystem::gasPhaseIdx;
+        default:
+            return FluidSystem::oilPhaseIdx;
+        }
+    }
+
+    // -(1/B) dB/dp of one phase at constant composition (Rs, Rv, Rsw and salt
+    // held), from the PVT tables by a small step up in pressure. Below the
+    // bubble point this leaves out the gas that comes out of solution.
+    template <class FluidState>
+    static double compressibility(const FluidState& fs, unsigned phaseIdx)
+    {
+        const unsigned region = fs.pvtRegionIndex();
+        const double temperature = getValue(fs.temperature(phaseIdx));
+        const double pressure = getValue(fs.pressure(phaseIdx));
+        const double step = std::max(1.0e-4 * pressure, 1.0e3);
+        const auto invB = [&](double p) -> double {
+            if (phaseIdx == FluidSystem::oilPhaseIdx) {
+                return FluidSystem::oilPvt().inverseFormationVolumeFactor(
+                    region, temperature, p, getValue(fs.Rs()));
+            }
+            if (phaseIdx == FluidSystem::gasPhaseIdx) {
+                return FluidSystem::gasPvt().inverseFormationVolumeFactor(
+                    region, temperature, p, getValue(fs.Rv()), getValue(fs.Rvw()));
+            }
+            return FluidSystem::waterPvt().inverseFormationVolumeFactor(
+                region, temperature, p, getValue(fs.Rsw()), getValue(fs.saltConcentration()));
+        };
+        const double now = invB(pressure);
+        return (invB(pressure + step) - now) / (step * now);
     }
 
     static constexpr bool hasSalt = getPropValue<TypeTag, Properties::EnableBrine>();
@@ -757,6 +957,7 @@ private:
                     && z <= box[5]) {
                     picked.push_back(k);
                     data.cells.push_back(static_cast<std::int64_t>(k));
+                    data.ijk.insert(data.ijk.end(), {i, j, z});
                 }
             }
         } else {

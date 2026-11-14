@@ -138,6 +138,29 @@ namespace
         out.set_unit_system(info.unitSystem);
     }
 
+    void fill(const ConnectionValues& connection, pb::WellConnection& out)
+    {
+        out.set_i(connection.i);
+        out.set_j(connection.j);
+        out.set_k(connection.k);
+        out.set_cell(connection.cell);
+        out.set_status(connection.status);
+        out.set_connection_factor(connection.connectionFactor);
+        out.set_kh(connection.kh);
+        out.set_depth(connection.depth);
+        // Set together from the last step's solution.
+        if (connection.pressure) {
+            out.set_pressure(*connection.pressure);
+            out.set_oil_rate(connection.oilRate.value_or(0.0));
+            out.set_water_rate(connection.waterRate.value_or(0.0));
+            out.set_gas_rate(connection.gasRate.value_or(0.0));
+            out.set_reservoir_rate(connection.reservoirRate.value_or(0.0));
+            out.set_productivity_index_oil(connection.productivityIndexOil.value_or(0.0));
+            out.set_productivity_index_water(connection.productivityIndexWater.value_or(0.0));
+            out.set_productivity_index_gas(connection.productivityIndexGas.value_or(0.0));
+        }
+    }
+
     void fill(const WellData& data, pb::WellDataReply& out)
     {
         for (const auto& well : data.wells) {
@@ -155,12 +178,21 @@ namespace
             w.set_salt_rate(well.saltRate);
             w.set_injector_type(well.injectorType);
             w.set_bhp_limit(well.bhpLimit);
+            for (const auto& connection : well.connections) {
+                fill(connection, *w.add_connections());
+            }
         }
         out.set_liquid_rate_unit(data.liquidRateUnit);
         out.set_gas_rate_unit(data.gasRateUnit);
         out.set_pressure_unit(data.pressureUnit);
         out.set_temperature_unit(data.temperatureUnit);
         out.set_salt_rate_unit(data.saltRateUnit);
+        out.set_transmissibility_unit(data.transmissibilityUnit);
+        out.set_kh_unit(data.khUnit);
+        out.set_length_unit(data.lengthUnit);
+        out.set_reservoir_rate_unit(data.reservoirRateUnit);
+        out.set_liquid_productivity_index_unit(data.liquidProductivityIndexUnit);
+        out.set_gas_productivity_index_unit(data.gasProductivityIndexUnit);
     }
 
     void fill(const SummaryData& data, pb::SummaryReply& out)
@@ -403,6 +435,7 @@ namespace
                 chunk.mutable_values()->Add(begin, begin + static_cast<std::ptrdiff_t>(count));
                 if (first) {
                     chunk.mutable_cells()->Add(data.cells.begin(), data.cells.end());
+                    chunk.mutable_ijk()->Add(data.ijk.begin(), data.ijk.end());
                     first = false;
                 }
                 if (!writer.Write(chunk)) {
@@ -735,6 +768,7 @@ public:
         Command command;
         command.kind = CommandKind::GetWellData;
         command.names.assign(request->wells().begin(), request->wells().end());
+        command.connections = request->connections();
         const Reply reply = submit(context, std::move(command));
         fill(reply.wellData, *out);
         return toGrpc(reply);
