@@ -23,6 +23,7 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -71,6 +72,7 @@ struct Command {
     CellSelection cells;
     std::vector<std::string> names;
     bool history = false;
+    bool connections = false;
     // AdvanceTo: a report step, or a date when targetStep is negative.
     int targetStep = -1;
     std::string date;
@@ -130,8 +132,30 @@ struct CellField {
 
 struct CellData {
     std::vector<CellField> fields;
-    // Active indices of the selected cells, set for a box selection.
+    // Active indices of the selected cells, and I, J and K of each, set for
+    // a box selection.
     std::vector<std::int64_t> cells;
+    std::vector<int> ijk;
+};
+
+// Dynamic values are empty before the first step.
+struct ConnectionValues {
+    int i = 0;
+    int j = 0;
+    int k = 0;
+    std::int64_t cell = -1;
+    std::string status;
+    double connectionFactor = 0.0;
+    double kh = 0.0;
+    double depth = 0.0;
+    std::optional<double> pressure;
+    std::optional<double> oilRate;
+    std::optional<double> waterRate;
+    std::optional<double> gasRate;
+    std::optional<double> reservoirRate;
+    std::optional<double> productivityIndexOil;
+    std::optional<double> productivityIndexWater;
+    std::optional<double> productivityIndexGas;
 };
 
 struct WellValues {
@@ -148,6 +172,7 @@ struct WellValues {
     double saltRate = 0.0;
     std::string injectorType;
     double bhpLimit = 0.0;
+    std::vector<ConnectionValues> connections;
 };
 
 struct WellData {
@@ -157,6 +182,12 @@ struct WellData {
     std::string pressureUnit;
     std::string temperatureUnit;
     std::string saltRateUnit;
+    std::string transmissibilityUnit;
+    std::string khUnit;
+    std::string lengthUnit;
+    std::string reservoirRateUnit;
+    std::string liquidProductivityIndexUnit;
+    std::string gasProductivityIndexUnit;
 };
 
 struct SummarySeries {

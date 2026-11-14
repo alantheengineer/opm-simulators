@@ -195,8 +195,9 @@ bool
 printWells(Client& client)
 {
     pb::WellDataReply reply;
-    if (!check(client.stub().GetWellData(client.context().get(), pb::WellDataRequest {}, &reply),
-               "GetWellData")) {
+    pb::WellDataRequest request;
+    request.set_connections(true);
+    if (!check(client.stub().GetWellData(client.context().get(), request, &reply), "GetWellData")) {
         return false;
     }
     for (const auto& well : reply.wells()) {
@@ -205,6 +206,14 @@ printWells(Client& client)
                   << reply.liquid_rate_unit() << ", gas " << well.gas_rate() << ' '
                   << reply.gas_rate_unit() << ", bhp " << well.bhp() << ' ' << reply.pressure_unit()
                   << ", bhp limit " << well.bhp_limit() << '\n';
+        for (const auto& c : well.connections()) {
+            std::cout << "connection " << well.name() << ' ' << c.i() << ' ' << c.j() << ' '
+                      << c.k() << " cell " << c.cell() << ' ' << c.status() << ", pressure "
+                      << c.pressure() << ' ' << reply.pressure_unit() << ", oil " << c.oil_rate()
+                      << ", oil PI " << c.productivity_index_oil() << ' '
+                      << reply.liquid_productivity_index_unit() << ", depth " << c.depth() << ' '
+                      << reply.length_unit() << '\n';
+        }
     }
     return true;
 }

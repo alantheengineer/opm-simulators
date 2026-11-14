@@ -162,7 +162,12 @@ message CellIndices {
 }
 
 message CellDataRequest {
-  // Field names as in the restart file, for example PRESSURE or SWAT.
+  // Field names, as in the restart file where it has them: PRESSURE, SWAT,
+  // SGAS, SOIL, RS, RV, TEMP, SALT, PORO, PORV, PERMX, PERMY, PERMZ, DEPTH,
+  // WATKR, OILKR, GASKR (relative permeability), WAT_VISC, OIL_VISC,
+  // GAS_VISC, WAT_DEN, OIL_DEN, GAS_DEN, BW, BO, BG (formation volume
+  // factors), WAT_COMP, OIL_COMP, GAS_COMP (phase compressibility at
+  // constant composition) and ROCK_COMP.
   repeated string fields = 1;
   // All active cells when neither is set.
   oneof selection {
@@ -185,11 +190,43 @@ message CellDataChunk {
   // Active indices of the selected cells. Sent in the first chunk of the
   // reply when the selection is a box.
   repeated int64 cells = 6;
+  // I, J and K of each of those cells, 1-based, three values per cell.
+  repeated int32 ijk = 7;
 }
 
 message WellDataRequest {
   // Well names. A trailing * matches any suffix. All wells when empty.
   repeated string wells = 1;
+  // Also list each well's connections.
+  bool connections = 2;
+}
+
+// A well's connection to one grid cell, as in COMPDAT.
+message WellConnection {
+  // The cell, 1-based.
+  int32 i = 1;
+  int32 j = 2;
+  int32 k = 3;
+  // Global active cell index, 0-based as in GetCellData. -1 for an inactive
+  // cell.
+  int64 cell = 4;
+  // OPEN, SHUT or AUTO.
+  string status = 5;
+  double connection_factor = 6;
+  double kh = 7;
+  double depth = 8;
+  // From the last report step. Not set before the first step.
+  optional double pressure = 9;
+  // Surface rates and the reservoir volume rate. Positive into the
+  // reservoir, negative out of it.
+  optional double oil_rate = 10;
+  optional double water_rate = 11;
+  optional double gas_rate = 12;
+  optional double reservoir_rate = 13;
+  // Productivity index of each phase.
+  optional double productivity_index_oil = 14;
+  optional double productivity_index_water = 15;
+  optional double productivity_index_gas = 16;
 }
 
 message WellData {
@@ -213,6 +250,8 @@ message WellData {
   string injector_type = 12;
   // Bottom hole pressure limit in force for the next report step.
   double bhp_limit = 13;
+  // When asked for, in the order of the well's connections.
+  repeated WellConnection connections = 14;
 }
 
 message WellDataReply {
@@ -223,6 +262,14 @@ message WellDataReply {
   string pressure_unit = 4;
   string temperature_unit = 5;
   string salt_rate_unit = 6;
+  // Units of connection factors, Kh, depths, reservoir rates and
+  // productivity indices.
+  string transmissibility_unit = 7;
+  string kh_unit = 8;
+  string length_unit = 9;
+  string reservoir_rate_unit = 10;
+  string liquid_productivity_index_unit = 11;
+  string gas_productivity_index_unit = 12;
 }
 
 message SummaryRequest {

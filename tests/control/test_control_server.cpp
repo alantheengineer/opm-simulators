@@ -145,7 +145,7 @@ struct FakeDriver {
         }
         return data;
     }
-    WellData wellData(const std::vector<std::string>&) const
+    WellData wellData(const std::vector<std::string>&, bool connections) const
     {
         WellData data;
         WellValues prod;
@@ -154,6 +154,18 @@ struct FakeDriver {
         prod.control = "ORAT";
         prod.oilRate = -100.0;
         prod.bhpLimit = 50.0;
+        if (connections) {
+            ConnectionValues connection;
+            connection.i = 10;
+            connection.j = 10;
+            connection.k = 3;
+            connection.cell = 299;
+            connection.status = "OPEN";
+            connection.connectionFactor = 4.5;
+            connection.pressure = 2900.0;
+            connection.oilRate = -100.0;
+            prod.connections.push_back(connection);
+        }
         data.wells.push_back(prod);
         WellValues inj;
         inj.name = "INJ";
@@ -552,6 +564,7 @@ BOOST_AUTO_TEST_CASE(WellsAndSummary)
     BOOST_CHECK_EQUAL(wells.wells(1).injector_type(), "WATER");
     BOOST_CHECK_EQUAL(wells.wells(1).bhp_limit(), 400.0);
     BOOST_CHECK_EQUAL(wells.liquid_rate_unit(), "SM3/DAY");
+    BOOST_CHECK_EQUAL(wells.wells(0).connections_size(), 0);
 
     pb::SummaryRequest request;
     request.add_keys("FOPR");
@@ -572,6 +585,28 @@ BOOST_AUTO_TEST_CASE(WellsAndSummary)
 
     BOOST_REQUIRE(shutdown(*f.client).ok());
     f.exitStatus.get();
+}
+
+BOOST_AUTO_TEST_CASE(WellConnectionsOnRequest)
+{
+    Fixture f;
+    pb::WellDataRequest request;
+    request.set_connections(true);
+    grpc::ClientContext context;
+    pb::WellDataReply wells;
+    BOOST_REQUIRE(f.client->GetWellData(&context, request, &wells).ok());
+    BOOST_REQUIRE_EQUAL(wells.wells(0).connections_size(), 1);
+    BOOST_CHECK_EQUAL(wells.wells(1).connections_size(), 0);
+    const auto& connection = wells.wells(0).connections(0);
+    BOOST_CHECK_EQUAL(connection.cell(), 299);
+    BOOST_CHECK_EQUAL(connection.k(), 3);
+    BOOST_CHECK_EQUAL(connection.connection_factor(), 4.5);
+    BOOST_CHECK(connection.has_pressure());
+    BOOST_CHECK_EQUAL(connection.pressure(), 2900.0);
+    BOOST_CHECK_EQUAL(connection.oil_rate(), -100.0);
+    BOOST_CHECK(connection.has_productivity_index_oil());
+
+    BOOST_REQUIRE(shutdown(*f.client).ok());
 }
 
 BOOST_AUTO_TEST_CASE(NoReadsAfterFailure)

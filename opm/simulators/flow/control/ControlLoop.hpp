@@ -223,7 +223,7 @@ namespace detail
             reply.cellData = driver.cellData(command.fields, command.siUnits, command.cells);
             break;
         case CommandKind::GetWellData:
-            reply.wellData = driver.wellData(command.names);
+            reply.wellData = driver.wellData(command.names, command.connections);
             break;
         case CommandKind::GetSummary:
             reply.summary = driver.summary(command.names, command.history);
@@ -458,7 +458,7 @@ startControlServer(const Options& options, const Comm& comm)
 //   StepReport lastStep() const;
 //   int finish();              final output, returns the exit status
 //   CellData cellData(fields, siUnits, selection);   collective, result on rank 0
-//   WellData wellData(names);                        result on rank 0
+//   WellData wellData(names, connections);           result on rank 0
 //   SummaryData summary(keys, history);              result on rank 0
 //   bool hasSummaryKey(key) const;                   rank 0
 //   ScheduleChange applySchedule(text);              every rank, same result

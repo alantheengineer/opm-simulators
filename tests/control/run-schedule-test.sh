@@ -69,6 +69,10 @@ wait "$pid" || fail "controlled run exited with $?"
 if [ "$(basename "$change")" = schedule-change.txt ]; then
     grep -q "^well PROD .*bhp limit 1500$" "$out/client.log" || fail "PROD BHP limit not reported"
     grep -q "^well INJ OPEN [A-Z]* GAS," "$out/client.log" || fail "INJ injector type not reported"
+    grep -q "^connection PROD 10 10 3 cell 299 OPEN, pressure [1-9].*, oil -[1-9].*, oil PI [1-9]" \
+        "$out/client.log" \
+        || fail "PROD connection not reported"
+    grep -q "^connection INJ 1 1 1 cell 0 OPEN" "$out/client.log" || fail "INJ connection not reported"
 fi
 
 compared=0
