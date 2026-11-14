@@ -435,6 +435,14 @@ BOOST_AUTO_TEST_CASE(RemoteEndpointNeedsToken)
     BOOST_CHECK_THROW(ControlServer {options}, std::invalid_argument);
 }
 
+BOOST_AUTO_TEST_CASE(PortInUseIsRefused)
+{
+    const ControlServer first {loopback()};
+    Options options = loopback();
+    options.endpoint = "127.0.0.1:" + std::to_string(first.port());
+    BOOST_CHECK_THROW(ControlServer {options}, std::runtime_error);
+}
+
 BOOST_AUTO_TEST_CASE(PendingRequestReleasedOnDestruction)
 {
     auto server = std::make_unique<ControlServer>(loopback());
