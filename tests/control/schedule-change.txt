@@ -11,3 +11,7 @@ MULTX
  300*0.5 /
 NEXTSTEP
  0.1 /
+TUNING
+ 0.1 0.5 /
+/
+/
