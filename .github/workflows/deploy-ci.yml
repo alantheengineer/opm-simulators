@@ -77,7 +77,7 @@ jobs:
         run: |
           sudo apt-get update
           xargs -a opm-simulators/.github/apt-packages.txt sudo apt-get install -y --no-install-recommends
-          sudo apt-get install -y --no-install-recommends clang-tidy-18
+          sudo apt-get install -y --no-install-recommends clang-tidy-18 libomp-18-dev
       - uses: actions/cache@v4
         with:
           path: .ccache

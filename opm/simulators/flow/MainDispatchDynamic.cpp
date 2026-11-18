@@ -33,6 +33,7 @@
 #include <flow/flow_brine.hpp>
 #include <flow/flow_brine_energy.hpp>
 #include <flow/flow_brine_precsalt_vapwat.hpp>
+#include <flow/flow_brine_saltprec_energy.hpp>
 #include <flow/flow_brine_saltprecipitation.hpp>
 #include <flow/flow_energy.hpp>
 #include <flow/flow_energy_tpsa.hpp>
@@ -57,6 +58,8 @@
 #include <flow/flow_oilwater_polymer.hpp>
 #include <flow/flow_oilwater_polymer_injectivity.hpp>
 #include <flow/flow_onephase.hpp>
+#include <flow/flow_onephase_brine.hpp>
+#include <flow/flow_onephase_brine_saltprec.hpp>
 #include <flow/flow_onephase_energy.hpp>
 #include <flow/flow_onephase_energy_tpsa.hpp>
 #include <flow/flow_onephase_tpsa.hpp>
@@ -93,6 +96,12 @@ int Opm::Main::dispatchDynamic_()
     // water-only case
     else if (phases.size() == 1 && phases.active(Phase::WATER) && !thermal) {
         return this->runWaterOnly(phases);
+    }
+
+    // water-only case with brine
+    else if (phases.size() == 2 && phases.active(Phase::WATER) && phases.active(Phase::BRINE)
+             && !thermal) {
+        return this->runWaterOnlyBrine(phases);
     }
 
     // water-only case with energy
@@ -336,6 +345,25 @@ int Opm::Main::runWaterOnlyEnergy(const Phases& phases)
     return flowWaterOnlyEnergyMain(argc_, argv_, outputCout_, outputFiles_);
 }
 
+int
+Opm::Main::runWaterOnlyBrine(const Phases& phases)
+{
+    if (!phases.active(Phase::WATER) || !phases.active(Phase::BRINE) || phases.size() != 2) {
+        if (outputCout_) {
+            std::cerr << "No valid configuration is found for water-only brine "
+                         "simulation, the valid option is water + brine\n";
+        }
+
+        return EXIT_FAILURE;
+    }
+
+    if (eclipseState_->getSimulationConfig().hasPRECSALT()) {
+        return flowWaterOnlyBrineSaltprecMain(argc_, argv_, outputCout_, outputFiles_);
+    }
+
+    return flowWaterOnlyBrineMain(argc_, argv_, outputCout_, outputFiles_);
+}
+
 int Opm::Main::runBrine(const Phases& phases)
 {
     if (! phases.active(Phase::WATER) || phases.size() == 2) {
@@ -453,6 +481,9 @@ int Opm::Main::runThermal(const Phases& phases)
 
     // brine-energy
     if (phases.active(Phase::BRINE)) {
+        if (eclipseState_->getSimulationConfig().hasPRECSALT()) {
+            return flowBrineSaltprecEnergyMain(argc_, argv_, outputCout_, outputFiles_);
+        }
         return flowBrineEnergyMain(argc_, argv_, outputCout_, outputFiles_);
     }
 

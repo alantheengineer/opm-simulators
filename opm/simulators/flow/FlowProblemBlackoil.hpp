@@ -1635,7 +1635,6 @@ protected:
                                           const FaceDir::DirEnum faceDir) const
     {
         using ExtensiveQuantities = GetPropType<TypeTag, Properties::ExtensiveQuantities>;
-        using Evaluation = GetPropType<TypeTag, Properties::Evaluation>;
 
         const auto& model = this->model();
         const auto& iqCell = model.intensiveQuantities(cellIdx, /*timeIdx=*/0);
@@ -1656,7 +1655,7 @@ protected:
             constexpr unsigned aquLocalIdx = 1;
             short upIdx = cellLocalIdx;
             short dnIdx = aquLocalIdx;
-            Evaluation pressureDifference = 0.0;
+            typename FlowProblemType::Evaluation pressureDifference = 0.0;
             ExtensiveQuantities::calculatePhasePressureDiff_(upIdx, dnIdx, pressureDifference,
                                                              iqCell, iqAqu, phaseIdx,
                                                              cellLocalIdx, aquLocalIdx,

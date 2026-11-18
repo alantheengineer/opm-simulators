@@ -490,6 +490,17 @@ private:
     /// \return Simulation's status/exit code.
     int runWaterOnlyEnergy(const Phases& phases);
 
+    /// Run a single-phase water simulation with brine, optionally with
+    /// salt precipitation.
+    ///
+    /// Called from dispatchDynamic_()
+    ///
+    /// \param[in] phases Run's active phases.  Needed to determine whether
+    /// or not the run's phase setup is supported.
+    ///
+    /// \return Simulation's status/exit code.
+    int runWaterOnlyBrine(const Phases& phases);
+
     /// Run a simulation with brine, typically in a CCS workflow
     ///
     /// Called from dispatchDynamic_()
