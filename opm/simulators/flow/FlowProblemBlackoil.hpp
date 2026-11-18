@@ -94,6 +94,7 @@ private:
     using typename FlowProblemType::Vanguard;
     using typename FlowProblemType::GlobalEqVector;
     using typename FlowProblemType::EqVector;
+    using typename FlowProblemType::Evaluation;
     using FlowProblemType::dim;
     using FlowProblemType::dimWorld;
     using FlowProblemType::numEq;
@@ -1635,7 +1636,6 @@ protected:
                                           const FaceDir::DirEnum faceDir) const
     {
         using ExtensiveQuantities = GetPropType<TypeTag, Properties::ExtensiveQuantities>;
-        using Evaluation = GetPropType<TypeTag, Properties::Evaluation>;
 
         const auto& model = this->model();
         const auto& iqCell = model.intensiveQuantities(cellIdx, /*timeIdx=*/0);
