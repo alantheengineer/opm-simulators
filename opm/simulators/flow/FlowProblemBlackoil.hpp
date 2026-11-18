@@ -31,6 +31,8 @@
 #ifndef OPM_FLOW_PROBLEM_BLACK_HPP
 #define OPM_FLOW_PROBLEM_BLACK_HPP
 
+#include <opm/common/OpmLog/OpmLog.hpp>
+
 #include <opm/input/eclipse/Schedule/Events.hpp>
 #include <opm/input/eclipse/Schedule/OilVaporizationProperties.hpp>
 
@@ -40,18 +42,20 @@
 #include <opm/input/eclipse/EclipseState/Aquifer/NumericalAquifer/NumericalAquiferCell.hpp>
 #include <opm/input/eclipse/EclipseState/Aquifer/NumericalAquifer/NumericalAquifers.hpp>
 #include <opm/input/eclipse/EclipseState/Grid/FaceDir.hpp>
+#include <opm/input/eclipse/EclipseState/Runspec.hpp>
 
 #include <opm/output/eclipse/EclipseIO.hpp>
 
 #include <opm/simulators/flow/ActionHandler.hpp>
+#include <opm/simulators/flow/BrineTracerComposition.hpp>
 #include <opm/simulators/flow/FlowProblem.hpp>
 #include <opm/simulators/flow/FlowProblemBlackoilProperties.hpp>
+#include <opm/simulators/flow/HybridNewton.hpp>
+#include <opm/simulators/flow/HybridNewtonConfig.hpp>
 #include <opm/simulators/flow/MixingRateControls.hpp>
 #include <opm/simulators/flow/NumericalAquiferEquilibrationCheck.hpp>
 #include <opm/simulators/flow/OutputBlackoilModule.hpp>
 #include <opm/simulators/flow/VtkTracerModule.hpp>
-#include <opm/simulators/flow/HybridNewton.hpp>
-#include <opm/simulators/flow/HybridNewtonConfig.hpp>
 
 #include <opm/simulators/utils/satfunc/SatfuncConsistencyCheckManager.hpp>
 
@@ -65,11 +69,14 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <unordered_map>
 #include <vector>
+
+#include <fmt/format.h>
 
 namespace Opm {
 
@@ -312,7 +319,18 @@ public:
     void beginTimeStep() override
     {
         FlowProblemType::beginTimeStep();
+        this->updateBrineComposition_();
         hybridNewton_.tryApplyHybridNewton();
+    }
+
+    /*!
+     * \brief The cell's brine electrolyte fractions in SALTMC TRACER mode.
+     *
+     * Returns nullptr in FIXED mode, where each PVT region has its own fractions.
+     */
+    const ElectrolyteFractions* brineComposition(unsigned globalDofIdx) const
+    {
+        return brineComposition_.composition(globalDofIdx);
     }
 
     /*!
@@ -358,6 +376,7 @@ public:
         }
         this->temperatureModel_.init();
         this->tracerModel_.prepareTracerBatches();
+        this->initBrineComposition_();
 
         this->updatePffDofData_();
 
@@ -1848,7 +1867,81 @@ protected:
 
     HybridNewton hybridNewton_;
 
+    BrineTracerComposition<Scalar> brineComposition_;
+
 private:
+    // SALTMC TRACER mode: find the ion tracers and build the first fractions
+    void initBrineComposition_()
+    {
+        if constexpr (enableBrine) {
+            const auto& saltmc = this->simulator().vanguard().eclState().runspec().multiCompSalt();
+            if (!saltmc.enabled() || saltmc.transport() != Saltmc::Transport::Tracer
+                || FluidSystem::waterPvt().approach() != WaterPvtApproach::BrineMulticomp) {
+                return;
+            }
+
+            const auto& tracers = this->tracerModel();
+            std::vector<std::string> names;
+            std::vector<bool> isWaterTracer;
+            for (int tracerIdx = 0; tracerIdx < tracers.numTracers(); ++tracerIdx) {
+                names.push_back(tracers.name(tracerIdx));
+                isWaterTracer.push_back(tracers.phase(tracerIdx) == Phase::WATER);
+            }
+            if (!brineComposition_.init(names, isWaterTracer)) {
+                throw std::runtime_error(
+                    "SALTMC TRANSPORT TRACER: no water tracer is named after an ion");
+            }
+            this->updateBrineComposition_();
+        }
+    }
+
+    // Refresh the fractions from the tracers, which were solved at the end of the last step
+    void updateBrineComposition_()
+    {
+        if constexpr (enableBrine) {
+            if (!brineComposition_.active()) {
+                return;
+            }
+            const auto& pvt
+                = FluidSystem::waterPvt().template getRealPvt<WaterPvtApproach::BrineMulticomp>();
+            const auto& tracers = this->tracerModel();
+            const auto& solution = this->model().solution(/*timeIdx=*/0);
+            brineComposition_.update(
+                pvt,
+                this->model().numGridDof(),
+                [&tracers](int tracerIdx, std::size_t cell) {
+                    return tracers.freeTracerConcentration(tracerIdx, static_cast<int>(cell));
+                },
+                [this](std::size_t cell) {
+                    return this->pvtRegionIndex(static_cast<unsigned>(cell));
+                },
+                [&solution](std::size_t cell) -> std::optional<Scalar> {
+                    // A cell with precipitated salt holds salt saturation, not concentration
+                    const auto& priVars = solution[cell];
+                    if (priVars.primaryVarsMeaningBrine() == BlackOil::BrineMeaning::Sp) {
+                        return std::nullopt;
+                    }
+                    return priVars[Indices::saltConcentrationIdx];
+                });
+
+            const auto& comm = this->simulator().gridView().comm();
+            const Scalar mismatch = comm.max(brineComposition_.maxMismatch());
+            if (comm.rank() == 0) {
+                const auto msg
+                    = fmt::format("SALTMC: ion tracers and BRINE total differ by up to {:.2f}%",
+                                  100.0 * mismatch);
+                if (mismatch > maxQuietMismatch_) {
+                    OpmLog::info(msg);
+                } else {
+                    OpmLog::debug(msg);
+                }
+            }
+        }
+    }
+
+    // Tracer-to-BRINE mismatch above this is logged as info rather than debug
+    static constexpr Scalar maxQuietMismatch_ = 0.01;
+
     void checkGpuAssemblySchedule_() const
     {
         if constexpr (getPropValue<TypeTag, Properties::RunAssemblyOnGpu>()) {

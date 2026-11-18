@@ -492,6 +492,7 @@ list (APPEND TEST_SOURCE_FILES
   tests/test_aqantrc_flow_keyword.cpp
   tests/test_blackoil_amg.cpp
   tests/test_blackoilprimaryvariables.cpp
+  tests/test_brine_tracer_composition.cpp
   tests/test_compequil.cpp
   tests/test_compequil_solvd.cpp
   tests/test_compositional_cpr_weights.cpp
@@ -1097,6 +1098,7 @@ list (APPEND PUBLIC_HEADER_FILES
   opm/simulators/flow/NonlinearSystemNldd.hpp
   opm/simulators/flow/BlackoilModelParameters.hpp
   opm/simulators/flow/BlackoilModelProperties.hpp
+  opm/simulators/flow/BrineTracerComposition.hpp
   opm/simulators/flow/NonlinearSystemBlackOilReservoirTPSA.hpp
   opm/simulators/flow/NonlinearSystem.hpp
   opm/simulators/flow/NonlinearSystem_impl.hpp

@@ -251,6 +251,10 @@ public:
         }
         if constexpr (enableBrine) {
             asImp_().updateSaltConcentration_(priVars, timeIdx, lintype);
+            // SALTMC TRACER mode: the cell's own ion ratios
+            if constexpr (requires { problem.brineComposition(globalSpaceIdx); }) {
+                fluidState_.setBrineComposition(problem.brineComposition(globalSpaceIdx));
+            }
         }
     }
 
