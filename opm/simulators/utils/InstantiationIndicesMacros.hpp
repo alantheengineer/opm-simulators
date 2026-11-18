@@ -59,6 +59,7 @@
     template<class Scalar>
     using FS = Opm::BlackOilFluidSystem<Scalar, Opm::BlackOilDefaultFluidSystemIndices>;
 
+    // clang-format off
 #define INSTANTIATE_CLASS(CLASS, T, ...) \
     template class CLASS<FS<T>,__VA_ARGS__>;
 
@@ -66,6 +67,7 @@
     INSTANTIATE_CLASS(CLASS,T,BlackOilOnePhaseIndices<0u,0u,0u,0u,false,false,0u,1u,0u>) \
     INSTANTIATE_CLASS(CLASS,T,BlackOilOnePhaseIndices<0u,0u,0u,1u,false,false,0u,1u,0u>) \
     INSTANTIATE_CLASS(CLASS,T,BlackOilOnePhaseIndices<0u,0u,0u,0u,false,false,0u,1u,5u>) \
+    INSTANTIATE_CLASS(CLASS,T,BlackOilOnePhaseIndices<0u,0u,0u,0u,false,true,0u,1u,0u>)  \
     INSTANTIATE_CLASS(CLASS,T,BlackOilTwoPhaseIndices<0u,0u,0u,0u,false,false,0u,0u,0u>) \
     INSTANTIATE_CLASS(CLASS,T,BlackOilTwoPhaseIndices<0u,0u,0u,0u,false,false,0u,1u,0u>) \
     INSTANTIATE_CLASS(CLASS,T,BlackOilTwoPhaseIndices<0u,0u,0u,0u,false,false,0u,2u,0u>) \
@@ -87,5 +89,6 @@
     INSTANTIATE_CLASS(CLASS,T,BlackOilVariableAndEquationIndices<0u,0u,0u,1u,false,false,0u,0u>)            \
     INSTANTIATE_CLASS(CLASS,T,BlackOilVariableAndEquationIndices<0u,0u,0u,1u,false,true,0u,0u>)             \
     INSTANTIATE_CLASS(CLASS,T,BlackOilVariableAndEquationIndices<1u,0u,0u,0u,true,false,0u,0u>)
+    // clang-format on
 
 #endif

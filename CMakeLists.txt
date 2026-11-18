@@ -815,6 +815,7 @@ macro(opm-simulators_targets_hook)
     brine
     brine_energy
     brine_precsalt_vapwat
+    brine_saltprec_energy
     brine_saltprecipitation
     energy
     energy_tpsa
@@ -839,6 +840,8 @@ macro(opm-simulators_targets_hook)
     oilwater_polymer
     oilwater_polymer_injectivity
     onephase
+    onephase_brine
+    onephase_brine_saltprec
     onephase_energy
     onephase_energy_tpsa
     onephase_tpsa
