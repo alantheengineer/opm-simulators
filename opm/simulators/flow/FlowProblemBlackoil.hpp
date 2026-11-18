@@ -94,7 +94,6 @@ private:
     using typename FlowProblemType::Vanguard;
     using typename FlowProblemType::GlobalEqVector;
     using typename FlowProblemType::EqVector;
-    using typename FlowProblemType::Evaluation;
     using FlowProblemType::dim;
     using FlowProblemType::dimWorld;
     using FlowProblemType::numEq;
@@ -1656,7 +1655,7 @@ protected:
             constexpr unsigned aquLocalIdx = 1;
             short upIdx = cellLocalIdx;
             short dnIdx = aquLocalIdx;
-            Evaluation pressureDifference = 0.0;
+            typename FlowProblemType::Evaluation pressureDifference = 0.0;
             ExtensiveQuantities::calculatePhasePressureDiff_(upIdx, dnIdx, pressureDifference,
                                                              iqCell, iqAqu, phaseIdx,
                                                              cellLocalIdx, aquLocalIdx,
