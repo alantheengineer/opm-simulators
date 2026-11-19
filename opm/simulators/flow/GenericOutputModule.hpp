@@ -601,6 +601,11 @@ protected:
     ScalarBuffer cSalt_;
     ScalarBuffer pSalt_;
     ScalarBuffer permFact_;
+    ScalarBuffer brineDensityFactor_;
+    ScalarBuffer brineViscosityFactor_;
+    ScalarBuffer brineIonicStrength_;
+    ScalarBuffer brineMolarMass_;
+    ScalarBuffer brineSaturationIndex_;
     ExtboContainer<Scalar> extboC_;
     ScalarBuffer soMax_;
     ScalarBuffer swMax_;
