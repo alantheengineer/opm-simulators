@@ -1555,12 +1555,20 @@ private:
             },
             Entry{ScalarEntry{&this->brineDensityFactor_,
                               [](const Context& ectx)
-                              { return brinePvt_().densityFactor(ectx.intQuants.pvtRegionIndex()); }
+                              {
+                                  return brinePvt_().densityFactor(
+                                      ectx.intQuants.pvtRegionIndex(),
+                                      getValue(ectx.fs.temperature(waterPhaseIdx)));
+                              }
                   }
             },
             Entry{ScalarEntry{&this->brineViscosityFactor_,
                               [](const Context& ectx)
-                              { return brinePvt_().viscosityFactor(ectx.intQuants.pvtRegionIndex()); }
+                              {
+                                  return brinePvt_().viscosityFactor(
+                                      ectx.intQuants.pvtRegionIndex(),
+                                      getValue(ectx.fs.temperature(waterPhaseIdx)));
+                              }
                   }
             },
             Entry{ScalarEntry{&this->brineRangeFlags_,
