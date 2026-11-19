@@ -336,7 +336,45 @@ public:
     static Scalar saltSol(unsigned regionIdx)
     { return params_.saltsolTable_[regionIdx]; }
 
+    /*!
+     * \brief Total salt solubility [kg/sm3] at a temperature.
+     *
+     * From SALTSOLT when given, otherwise the SALTSOL constant. The table value is held
+     * constant beyond its ends.
+     */
+    template <class Evaluation>
+    OPM_HOST_DEVICE static Evaluation saltSolubility(unsigned regionIdx,
+                                                     const Evaluation& temperature)
+    {
+        if (params_.saltsoltSolubility_.empty()) {
+            return Evaluation(params_.saltsolTable_[regionIdx]);
+        }
+        return evalClamped_(params_.saltsoltSolubility_[regionIdx], temperature);
+    }
+
+    /// Total salt over solubility at which salt starts to precipitate; 1 without SALTSOLT
+    OPM_HOST_DEVICE static Scalar saltSupersaturation(unsigned regionIdx, Scalar temperature)
+    {
+        if (params_.saltsoltSupersaturation_.empty()) {
+            return 1.0;
+        }
+        return evalClamped_(params_.saltsoltSupersaturation_[regionIdx], temperature);
+    }
+
 private:
+    template <class Evaluation>
+    OPM_HOST_DEVICE static Evaluation evalClamped_(const TabulatedFunction& table,
+                                                   const Evaluation& x)
+    {
+        if (x < table.xMin()) {
+            return Evaluation(table.eval(table.xMin()));
+        }
+        if (x > table.xMax()) {
+            return Evaluation(table.eval(table.xMax()));
+        }
+        return table.eval(x);
+    }
+
     static BlackOilBrineParams<Scalar> params_;
 };
 
@@ -399,12 +437,15 @@ public:
         auto& fs = asImp_().fluidState_;
 
         if constexpr (enableSaltPrecipitation) {
-            saltSolubility_ = BrineModule::saltsolTable(pvtnumRegionIdx);
+            // The temperature is set before the salt, so the solubility can follow it
+            const Evaluation solubility
+                = BrineModule::saltSolubility(pvtnumRegionIdx, fs.temperature(/*phaseIdx=*/0));
+            saltSolubility_ = getValue(solubility);
             saltDensity_ = BrineModule::saltdenTable(pvtnumRegionIdx);
 
             if (priVars.primaryVarsMeaningBrine() == PrimaryVariables::BrineMeaning::Sp) {
                 saltSaturation_ = priVars.makeEvaluation(saltConcentrationIdx, timeIdx, lintype);
-                fs.setSaltConcentration(saltSolubility_);
+                fs.setSaltConcentration(solubility);
             }
             else {
                 saltConcentration_ = priVars.makeEvaluation(saltConcentrationIdx, timeIdx, lintype);

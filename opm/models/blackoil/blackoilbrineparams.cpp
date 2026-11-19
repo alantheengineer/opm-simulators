@@ -25,13 +25,15 @@
 #include <opm/models/blackoil/blackoilbrineparams.hpp>
 
 #include <opm/input/eclipse/EclipseState/EclipseState.hpp>
-#include <opm/input/eclipse/EclipseState/Tables/PvtwsaltTable.hpp>
 #include <opm/input/eclipse/EclipseState/Tables/PcfactTable.hpp>
 #include <opm/input/eclipse/EclipseState/Tables/PermfactTable.hpp>
+#include <opm/input/eclipse/EclipseState/Tables/PvtwsaltTable.hpp>
 #include <opm/input/eclipse/EclipseState/Tables/SaltSolubilityTable.hpp>
-#include <opm/input/eclipse/EclipseState/Tables/TableManager.hpp>
+#include <opm/input/eclipse/EclipseState/Tables/SaltsoltTable.hpp>
 #include <opm/input/eclipse/EclipseState/Tables/SimpleTable.hpp>
+#include <opm/input/eclipse/EclipseState/Tables/TableManager.hpp>
 
+#include <algorithm>
 #include <cassert>
 #include <cstddef>
 #include <stdexcept>
@@ -60,6 +62,41 @@ void verifyState(const Opm::EclipseState& eclState)
 }
 
 namespace Opm {
+
+namespace
+{
+
+    // SALTSOLT: total salt solubility and S_max against temperature, per PVT region
+    template <class TabulatedFunction>
+    void readSaltsolt(const TableManager& tableManager,
+                      unsigned numPvtRegions,
+                      bool hasSaltsol,
+                      std::vector<TabulatedFunction>& solubility,
+                      std::vector<TabulatedFunction>& supersaturation)
+    {
+        const TableContainer& tables = tableManager.getSaltsoltTables();
+        if (tables.empty()) {
+            return;
+        }
+        if (!hasSaltsol) {
+            throw std::runtime_error("SALTSOLT needs SALTSOL for the density of precipitated salt");
+        }
+        solubility.resize(numPvtRegions);
+        supersaturation.resize(numPvtRegions);
+        for (unsigned regionIdx = 0; regionIdx < numPvtRegions; ++regionIdx) {
+            const auto& table = tables.getTable<SaltsoltTable>(regionIdx);
+            const auto& smax = table.getMaxSaturationColumn();
+            if (*std::min_element(smax.begin(), smax.end()) < 1.0) {
+                throw std::runtime_error(
+                    "SALTSOLT: S_max below 1 would precipitate salt below its solubility");
+            }
+            solubility[regionIdx].setXYContainers(table.getTemperatureColumn(),
+                                                  table.getSolubilityColumn());
+            supersaturation[regionIdx].setXYContainers(table.getTemperatureColumn(), smax);
+        }
+    }
+
+} // namespace
 
 template<class Scalar>
 template<bool enableBrine, bool enableSaltPrecipitation>
@@ -112,6 +149,12 @@ initFromState(const EclipseState& eclState)
                 saltdenTable_[pvtRegionIdx] = saltsolTable.getSaltdenColumn().front();
             }
         }
+
+        readSaltsolt(tableManager,
+                     numPvtRegions,
+                     !saltsolTables.empty(),
+                     saltsoltSolubility_,
+                     saltsoltSupersaturation_);
 
         const TableContainer& pcfactTables = tableManager.getPcfactTables();
         if (!pcfactTables.empty()) {

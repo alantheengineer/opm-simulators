@@ -537,6 +537,11 @@ public:
         if (primaryVarsMeaningWater() == WaterMeaning::Disabled &&
             primaryVarsMeaningGas() == GasMeaning::Disabled)
         {
+            // Salt can still precipitate in a water-only run
+            if constexpr (enableSaltPrecipitation) {
+                adaptSaltPrimaryVariable_(asImp_().temperature_(problem, globalDofIdx, fluidSystem),
+                                          eps);
+            }
             return false;
         }
 
@@ -559,25 +564,8 @@ public:
             sg = 1.0 - sw; // water + gas case
         }
 
-        // if solid phase disappeares:  Sp (Solid salt saturation) -> Cs (salt concentration)
-        // if solid phase appears: Cs (salt concentration) ->  Sp (Solid salt saturation)
         if constexpr (enableSaltPrecipitation) {
-            const Scalar saltSolubility = BrineModule::saltSol(pvtRegionIndex());
-            if (primaryVarsMeaningBrine() == BrineMeaning::Sp) {
-                saltConcentration = saltSolubility;
-                const Scalar saltSat = (*this)[saltConcentrationIdx];
-                if (saltSat < -eps) { // precipitated salt dissappears
-                    setPrimaryVarsMeaningBrine(BrineMeaning::Cs);
-                    (*this)[saltConcentrationIdx] = saltSolubility; // set salt concentration to solubility limit
-                }
-            }
-            else if (primaryVarsMeaningBrine() == BrineMeaning::Cs) {
-                saltConcentration = (*this)[saltConcentrationIdx];
-                if (saltConcentration > saltSolubility + eps) { // salt concentration exceeds solubility limit
-                    setPrimaryVarsMeaningBrine(BrineMeaning::Sp);
-                    (*this)[saltConcentrationIdx] = 0.0;
-                }
-            }
+            saltConcentration = adaptSaltPrimaryVariable_(T, eps);
         }
 
         // if solvent saturation disappeares:  Ss (Solvent saturation) -> Rsolw (solvent dissolved in water)
@@ -1061,6 +1049,35 @@ private:
             return (*this)[Indices::biofilmVolumeFractionIdx];
         else
             return 0.0;
+    }
+
+    // Switch between salt concentration (Cs) and precipitated salt saturation (Sp).
+    // Returns the salt concentration.
+    OPM_HOST_DEVICE Scalar adaptSaltPrimaryVariable_(Scalar temperature, Scalar eps)
+    {
+        const Scalar saltSolubility = BrineModule::saltSolubility(pvtRegionIndex(), temperature);
+        if (primaryVarsMeaningBrine() == BrineMeaning::Sp) {
+            const Scalar saltSat = (*this)[saltConcentrationIdx];
+            if (saltSat < -eps) { // precipitated salt disappears
+                setPrimaryVarsMeaningBrine(BrineMeaning::Cs);
+                (*this)[saltConcentrationIdx] = saltSolubility;
+            }
+            return saltSolubility;
+        }
+
+        if (primaryVarsMeaningBrine() != BrineMeaning::Cs) {
+            return 0.0;
+        }
+
+        const Scalar saltConcentration = (*this)[saltConcentrationIdx];
+        // Salt precipitates once the brine passes the supersaturation limit
+        const Scalar limit
+            = BrineModule::saltSupersaturation(pvtRegionIndex(), temperature) * saltSolubility;
+        if (saltConcentration > limit + eps) {
+            setPrimaryVarsMeaningBrine(BrineMeaning::Sp);
+            (*this)[saltConcentrationIdx] = 0.0;
+        }
+        return saltConcentration;
     }
 
     template<class FluidSystemInstance = FluidSystem>

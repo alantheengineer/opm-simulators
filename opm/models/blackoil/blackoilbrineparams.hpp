@@ -50,6 +50,9 @@ struct BlackOilBrineParams
     std::vector<TabulatedFunction> permfactTable_;
     std::vector<Scalar> saltsolTable_;
     std::vector<Scalar> saltdenTable_;
+    // SALTSOLT: solubility and supersaturation factor against temperature
+    std::vector<TabulatedFunction> saltsoltSolubility_;
+    std::vector<TabulatedFunction> saltsoltSupersaturation_;
     std::vector<Scalar> referencePressure_;
 };
 
