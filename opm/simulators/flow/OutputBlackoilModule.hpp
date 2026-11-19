@@ -1563,6 +1563,18 @@ private:
                               { return brinePvt_().viscosityFactor(ectx.intQuants.pvtRegionIndex()); }
                   }
             },
+            Entry{ScalarEntry{&this->brineRangeFlags_,
+                              [](const Context& ectx)
+                              {
+                                  return static_cast<Scalar>(brinePvt_().outOfRange(
+                                      ectx.intQuants.pvtRegionIndex(),
+                                      getValue(ectx.fs.temperature(waterPhaseIdx)),
+                                      getValue(ectx.fs.pressure(waterPhaseIdx)),
+                                      getValue(ectx.fs.saltConcentration()),
+                                      BlackOil::getBrineComposition_(ectx.fs)));
+                              }
+                  }
+            },
             Entry{ScalarEntry{&this->brineIonicStrength_,
                               [](const Context& ectx)
                               {
