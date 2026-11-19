@@ -134,6 +134,8 @@ class OutputBlackOilModule : public GenericOutputModule<GetPropType<TypeTag, Pro
     static constexpr bool enableExtbo = getPropValue<TypeTag, Properties::EnableExtbo>();
     static constexpr bool enableFoam = getPropValue<TypeTag, Properties::EnableFoam>();
     static constexpr bool enablePolymer = getPropValue<TypeTag, Properties::EnablePolymer>();
+    static constexpr bool enableSaltPrecipitation
+        = getPropValue<TypeTag, Properties::EnableSaltPrecipitation>();
     static constexpr bool enableSolvent = getPropValue<TypeTag, Properties::EnableSolvent>();
     enum { enableMICP = Indices::enableMICP };
     enum { enableVapwat = getPropValue<TypeTag, Properties::EnableVapwat>() };
@@ -863,6 +865,11 @@ protected:
     }
 
 private:
+    // Only called for buffers allocated when the water PVT is BrineMulticomp
+    static const auto& brinePvt_()
+    {
+        return FluidSystem::waterPvt().template getRealPvt<WaterPvtApproach::BrineMulticomp>();
+    }
 
     // Buffers of the quantities only the black-oil formulation produces.
     using ScalarBuffer = typename BaseType::ScalarBuffer;
@@ -1544,6 +1551,49 @@ private:
             Entry{ScalarEntry{&this->permFact_,
                               [](const Context& ectx)
                               { return getValue(ectx.intQuants.permFactor()); }
+                  }
+            },
+            Entry{ScalarEntry{&this->brineDensityFactor_,
+                              [](const Context& ectx)
+                              { return brinePvt_().densityFactor(ectx.intQuants.pvtRegionIndex()); }
+                  }
+            },
+            Entry{ScalarEntry{&this->brineViscosityFactor_,
+                              [](const Context& ectx)
+                              { return brinePvt_().viscosityFactor(ectx.intQuants.pvtRegionIndex()); }
+                  }
+            },
+            Entry{ScalarEntry{&this->brineIonicStrength_,
+                              [](const Context& ectx)
+                              {
+                                  return brinePvt_().ionicStrength(ectx.intQuants.pvtRegionIndex(),
+                                                                   getValue(ectx.fs.saltConcentration()),
+                                                                   BlackOil::getBrineComposition_(ectx.fs));
+                              }
+                  }
+            },
+            Entry{ScalarEntry{&this->brineMolarMass_,
+                              [](const Context& ectx)
+                              {
+                                  return brinePvt_().meanSaltMolarMass(ectx.intQuants.pvtRegionIndex(),
+                                                                       getValue(ectx.fs.saltConcentration()),
+                                                                       BlackOil::getBrineComposition_(ectx.fs));
+                              }
+                  }
+            },
+            Entry{ScalarEntry{&this->brineSaturationIndex_,
+                              [](const Context& ectx)
+                              {
+                                  if constexpr (enableSaltPrecipitation) {
+                                      const Scalar solubility = ectx.intQuants.saltSolubility();
+                                      return solubility > 0.0
+                                          ? getValue(ectx.fs.saltConcentration()) / solubility
+                                          : Scalar{0};
+                                  }
+                                  else {
+                                      return Scalar{0};
+                                  }
+                              }
                   }
             },
             Entry{ScalarEntry{&this->rPorV_,

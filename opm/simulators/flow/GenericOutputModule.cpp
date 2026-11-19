@@ -122,6 +122,19 @@ namespace {
             }
         }
     };
+
+    // True when the water phase uses the SALTMC multicomponent brine PVT
+    template <class FluidSystem>
+    bool
+    usesBrineMulticompPvt(const bool enableBrine)
+    {
+        if constexpr (requires { FluidSystem::waterPvt().approach(); }) {
+            return enableBrine && FluidSystem::phaseIsActive(FluidSystem::waterPhaseIdx)
+                && FluidSystem::waterPvt().approach() == Opm::WaterPvtApproach::BrineMulticomp;
+        } else {
+            return false;
+        }
+    }
 }
 
 namespace Opm {
@@ -409,6 +422,12 @@ assignToSolution(data::Solution& sol)
 
     std::vector<DataEntry> baseSolutionVector;
 
+    // clang-format off
+    addEntry(baseSolutionVector, "BRINE_CD", UnitSystem::measure::identity,                              brineDensityFactor_);
+    addEntry(baseSolutionVector, "BRINE_CV", UnitSystem::measure::identity,                              brineViscosityFactor_);
+    addEntry(baseSolutionVector, "BRINE_I",  UnitSystem::measure::identity,                              brineIonicStrength_);
+    addEntry(baseSolutionVector, "BRINE_MW", UnitSystem::measure::identity,                              brineMolarMass_);
+    addEntry(baseSolutionVector, "BRINE_SI", UnitSystem::measure::identity,                              brineSaturationIndex_);
     addEntry(baseSolutionVector, "FOAM",     UnitSystem::measure::identity,                              cFoam_);
     addEntry(baseSolutionVector, "PCGW",     UnitSystem::measure::pressure,                              pcgw_);
     addEntry(baseSolutionVector, "PCOG",     UnitSystem::measure::pressure,                              pcog_);
@@ -428,6 +447,7 @@ assignToSolution(data::Solution& sol)
     addEntry(baseSolutionVector, "SSOLVENT", UnitSystem::measure::identity,                              sSol_);
     addEntry(baseSolutionVector, "SWHY1",    UnitSystem::measure::identity,                              swmin_);
     addEntry(baseSolutionVector, "SWMAX",    UnitSystem::measure::identity,                              swMax_);
+    // clang-format on
 
 
     auto extendedSolutionArrays = std::array {
@@ -753,6 +773,8 @@ doAllocBuffers(const unsigned bufferSize,
     const auto& simConfig = eclState_.getSimulationConfig();
     using OilVapP = OilVaporizationProperties::OilVaporization;
 
+    const bool brineMulticomp = usesBrineMulticompPvt<FluidSystem>(enableBrine_);
+
     auto rockc_fields = std::vector{
         &rockCompPorvMultiplier_,
         &rockCompTransMultiplier_,
@@ -761,6 +783,7 @@ doAllocBuffers(const unsigned bufferSize,
         &overburdenPressure_
     };
 
+    // clang-format off
     const auto entries = std::array{
        Entry{&saturation_,                       "S", true},
        Entry{&fluidPressure_,             "PRESSURE", true},
@@ -808,6 +831,11 @@ doAllocBuffers(const unsigned bufferSize,
        Entry{&gasDissolutionFactorInWater_, "RSWSAT", FluidSystem::enableDissolvedGasInWater(), false},
        Entry{&waterVaporizationFactor_,     "RVWSAT", FluidSystem::enableVaporizedWater(), false},
        Entry{&rPorV_,                        "RPORV", true, false},
+       Entry{&brineDensityFactor_,        "BRINE_CD", brineMulticomp, false},
+       Entry{&brineViscosityFactor_,      "BRINE_CV", brineMulticomp, false},
+       Entry{&brineIonicStrength_,         "BRINE_I", brineMulticomp, false},
+       Entry{&brineMolarMass_,            "BRINE_MW", brineMulticomp, false},
+       Entry{&brineSaturationIndex_,      "BRINE_SI", enableSaltPrecipitation_, false},
        Entry{&density_,                        "DEN", true, false, EntryPhaseType::NGWO},
        Entry{&viscosity_,                     "VISC", true, false, EntryPhaseType::NGasWatOil},
        Entry{&pcog_,                          "PCOG", FluidSystem::phaseIsActive(oilPhaseIdx) &&
@@ -819,6 +847,7 @@ doAllocBuffers(const unsigned bufferSize,
        Entry{&residual_,                  "RESIDUAL", true, false, EntryPhaseType::None},
        Entry{&rockc_fields,                  "ROCKC", true, false},
     };
+    // clang-format on
 
     auto handleScalarEntry =
         [&rstKeywords, bufferSize](ScalarBuffer& data,
