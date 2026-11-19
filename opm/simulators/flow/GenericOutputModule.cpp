@@ -425,6 +425,7 @@ assignToSolution(data::Solution& sol)
     // clang-format off
     addEntry(baseSolutionVector, "BRINE_CD", UnitSystem::measure::identity,                              brineDensityFactor_);
     addEntry(baseSolutionVector, "BRINE_CV", UnitSystem::measure::identity,                              brineViscosityFactor_);
+    addEntry(baseSolutionVector, "BRINE_EX", UnitSystem::measure::identity,                              brineRangeFlags_);
     addEntry(baseSolutionVector, "BRINE_I",  UnitSystem::measure::identity,                              brineIonicStrength_);
     addEntry(baseSolutionVector, "BRINE_MW", UnitSystem::measure::identity,                              brineMolarMass_);
     addEntry(baseSolutionVector, "BRINE_SI", UnitSystem::measure::identity,                              brineSaturationIndex_);
@@ -833,6 +834,7 @@ doAllocBuffers(const unsigned bufferSize,
        Entry{&rPorV_,                        "RPORV", true, false},
        Entry{&brineDensityFactor_,        "BRINE_CD", brineMulticomp, false},
        Entry{&brineViscosityFactor_,      "BRINE_CV", brineMulticomp, false},
+       Entry{&brineRangeFlags_,           "BRINE_EX", brineMulticomp, false},
        Entry{&brineIonicStrength_,         "BRINE_I", brineMulticomp, false},
        Entry{&brineMolarMass_,            "BRINE_MW", brineMulticomp, false},
        Entry{&brineSaturationIndex_,      "BRINE_SI", enableSaltPrecipitation_, false},

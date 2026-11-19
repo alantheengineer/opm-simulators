@@ -603,6 +603,7 @@ protected:
     ScalarBuffer permFact_;
     ScalarBuffer brineDensityFactor_;
     ScalarBuffer brineViscosityFactor_;
+    ScalarBuffer brineRangeFlags_;
     ScalarBuffer brineIonicStrength_;
     ScalarBuffer brineMolarMass_;
     ScalarBuffer brineSaturationIndex_;

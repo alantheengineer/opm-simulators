@@ -47,6 +47,7 @@
 #include <opm/output/eclipse/EclipseIO.hpp>
 
 #include <opm/simulators/flow/ActionHandler.hpp>
+#include <opm/simulators/flow/BrineRangeMonitor.hpp>
 #include <opm/simulators/flow/BrineTracerComposition.hpp>
 #include <opm/simulators/flow/FlowProblem.hpp>
 #include <opm/simulators/flow/FlowProblemBlackoilProperties.hpp>
@@ -377,6 +378,7 @@ public:
         this->temperatureModel_.init();
         this->tracerModel_.prepareTracerBatches();
         this->initBrineComposition_();
+        this->initBrineRangeMonitor_();
 
         this->updatePffDofData_();
 
@@ -469,6 +471,7 @@ public:
     void endTimeStep() override
     {
         FlowProblemType::endTimeStep();
+        this->checkBrineRange_();
         this->endStepApplyAction();
     }
 
@@ -540,6 +543,7 @@ public:
             .evalUDQAssignments(this->episodeIndex(), this->simulator().vanguard().udqState());
 
         FlowProblemType::endEpisode();
+        this->reportBrineRange_();
     }
 
     void writeReports(const SimulatorTimer& timer)
@@ -1869,6 +1873,8 @@ protected:
 
     BrineTracerComposition<Scalar> brineComposition_;
 
+    BrineRangeMonitor<Scalar> brineRangeMonitor_;
+
 private:
     // SALTMC TRACER mode: find the ion tracers and build the first fractions
     void initBrineComposition_()
@@ -1941,6 +1947,61 @@ private:
 
     // Tracer-to-BRINE mismatch above this is logged as info rather than debug
     static constexpr Scalar maxQuietMismatch_ = 0.01;
+
+    void initBrineRangeMonitor_()
+    {
+        if constexpr (enableBrine) {
+            const auto& saltmc = this->simulator().vanguard().eclState().runspec().multiCompSalt();
+            if (!saltmc.enabled()
+                || FluidSystem::waterPvt().approach() != WaterPvtApproach::BrineMulticomp) {
+                return;
+            }
+            brineRangeMonitor_.init(
+                FluidSystem::waterPvt().template getRealPvt<WaterPvtApproach::BrineMulticomp>(),
+                saltmc.rangePolicy(),
+                this->model().numGridDof());
+        }
+    }
+
+    // Check the converged state of every interior cell against the fitted ranges
+    void checkBrineRange_()
+    {
+        if constexpr (enableBrine) {
+            if (!brineRangeMonitor_.active()) {
+                return;
+            }
+            OPM_TIMEBLOCK(checkBrineRange);
+            const auto& model = this->model();
+            for (const auto& elem : elements(this->gridView(), Dune::Partitions::interior)) {
+                const unsigned cellIdx = this->elementMapper().index(elem);
+                const auto& fs = model.intensiveQuantities(cellIdx, /*timeIdx=*/0).fluidState();
+                brineRangeMonitor_.check(cellIdx,
+                                         this->pvtRegionIndex(cellIdx),
+                                         getValue(fs.temperature(waterPhaseIdx)),
+                                         getValue(fs.pressure(waterPhaseIdx)),
+                                         getValue(fs.saltConcentration()),
+                                         BlackOil::getBrineComposition_(fs));
+            }
+        }
+    }
+
+    // Once per report step: combine across ranks, log, and stop under RANGE_POLICY ERROR
+    void reportBrineRange_()
+    {
+        if (!brineRangeMonitor_.active()) {
+            return;
+        }
+        const auto& comm = this->simulator().gridView().comm();
+        const auto report = brineRangeMonitor_.endReportStep(comm, this->episodeIndex());
+        if (comm.rank() == 0) {
+            for (const auto& message : report.messages) {
+                OpmLog::warning(message);
+            }
+        }
+        if (report.stop) {
+            throw std::runtime_error("SALTMC: brine model evaluated outside its fitted range");
+        }
+    }
 
     void checkGpuAssemblySchedule_() const
     {
